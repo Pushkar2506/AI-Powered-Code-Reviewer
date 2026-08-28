@@ -1,18 +1,72 @@
 const express = require('express');
-const aiRoutes = require('./routes/ai.routes')
 const cors = require('cors')
+const helmet = require('helmet')
+const rateLimit = require('express-rate-limit')
+const aiRoutes = require('./routes/ai.routes')
+const authRoutes = require('./routes/auth.routes')
+const reviewRoutes = require('./routes/review.routes')
+const adminRoutes = require('./routes/admin.routes')
 
 const app = express()
 
-app.use(cors())
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://localhost:5175')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean)
 
+app.use(helmet())
 
-app.use(express.json())
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true)
+        }
+
+        return callback(new Error('Not allowed by CORS'))
+    }
+}))
+
+app.use(rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.RATE_LIMIT_MAX_REQUESTS) || 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        error: 'Too many review requests. Please try again later.'
+    }
+}))
+
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '256kb' }))
 
 app.get('/', (req, res) => {
-    res.send('Hello World')
+    res.json({ status: 'ok', service: 'ai-code-reviewer-api' })
+})
+
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok' })
 })
 
 app.use('/ai', aiRoutes)
+app.use('/auth', authRoutes)
+app.use('/reviews', reviewRoutes)
+app.use('/admin', adminRoutes)
+
+app.use((req, res) => {
+    res.status(404).json({ error: 'Route not found' })
+})
+
+app.use((err, req, res, next) => {
+    console.error(err)
+
+    if (err.type === 'entity.too.large') {
+        return res.status(413).json({ error: 'Request body is too large.' })
+    }
+
+    if (err.message === 'Not allowed by CORS') {
+        return res.status(403).json({ error: 'This origin is not allowed.' })
+    }
+
+    return res.status(500).json({ error: 'Something went wrong. Please try again.' })
+})
 
 module.exports = app
