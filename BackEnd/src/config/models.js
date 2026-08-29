@@ -8,11 +8,6 @@ const availableModels = [
         id: 'gemini-3.6-flash',
         name: 'Gemini 3.6 Flash',
         description: 'Balanced quality and speed.'
-    },
-    {
-        id: 'gemini-2.5-flash',
-        name: 'Gemini 2.5 Flash',
-        description: 'Fast, lower-latency review mode.'
     }
 ]
 

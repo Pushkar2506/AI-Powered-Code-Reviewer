@@ -60,6 +60,16 @@ input {
   font: inherit;
 }
 
+textarea.profile-textarea {
+  min-height: 130px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 12px;
+  resize: vertical;
+}
+
 button {
   cursor: pointer;
 }
@@ -376,6 +386,35 @@ a {
   gap: 14px;
 }
 
+.auth-oauth {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.auth-oauth .ghost-button {
+  width: 100%;
+}
+
+.auth-divider {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  display: block;
+  height: 1px;
+  background: var(--line);
+  content: "";
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -670,6 +709,100 @@ button:focus-visible {
   line-height: 1.6;
 }
 
+.ai-options-panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+
+.ai-options-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(180px, 0.5fr) minmax(180px, 0.5fr) minmax(260px, 0.8fr);
+  gap: 14px;
+}
+
+.ai-options-grid textarea,
+.compare-editor textarea {
+  min-height: 110px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 12px;
+  resize: vertical;
+}
+
+.span-two {
+  grid-column: span 2;
+}
+
+.option-block {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.chip-list,
+.toggle-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  padding: 0 12px;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.chip.active {
+  border-color: color-mix(in srgb, var(--primary) 44%, var(--line));
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--text);
+}
+
+.toggle-list label {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  padding: 0 12px;
+  color: var(--text);
+}
+
+.toggle-list input {
+  min-height: auto;
+}
+
+.compare-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  padding: 22px;
+}
+
+.compare-editor textarea {
+  min-height: calc(100vh - 330px);
+  background: var(--editor);
+  color: #eef2f6;
+  font-family: "Fira Code", "Fira Mono", Consolas, monospace;
+}
+
 .multi-file-editor {
   display: grid;
   gap: 14px;
@@ -782,9 +915,41 @@ button:focus-visible {
 }
 
 .comment-list,
-.checklist {
+.checklist,
+.ai-findings,
+.generated-files {
   display: grid;
   gap: 10px;
+}
+
+.ai-findings {
+  gap: 18px;
+}
+
+.ai-findings h3 {
+  margin: 0 0 10px;
+}
+
+.generated-files article {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 14px;
+}
+
+.generated-files article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.generated-files pre {
+  min-height: 180px;
+  margin: 0;
+  white-space: pre-wrap;
 }
 
 .comment-card,
@@ -1385,10 +1550,12 @@ button:focus-visible {
   .feature-grid,
   .steps-grid,
   .metric-grid,
+  .ai-options-grid,
   .admin-metrics,
   .admin-analytics-grid,
   .result-summary,
   .diff-grid,
+  .compare-editor,
   .workspace,
   .settings-grid,
   .preview-grid {
@@ -1448,10 +1615,12 @@ button:focus-visible {
   .toolbar label,
   .toolbar select,
   .toolbar .primary-button,
+  .auth-oauth,
   .admin-filter-bar,
   .admin-filter-bar label,
   .admin-filter-bar input,
   .admin-filter-bar select,
+  .span-two,
   .project-create,
   .source-tabs,
   .result-actions,

@@ -32,6 +32,28 @@ const sourceModes = [
   { id: 'multi_file', label: 'Multi-file' },
   { id: 'github_repo', label: 'GitHub Repo' },
   { id: 'pull_request', label: 'Pull Request' },
+  { id: 'compare_versions', label: 'Compare Versions' },
+]
+
+const focusOptions = [
+  { id: 'security', label: 'Security' },
+  { id: 'performance', label: 'Performance' },
+  { id: 'readability', label: 'Readability' },
+  { id: 'tests', label: 'Tests' },
+]
+
+const explanationLevels = [
+  { id: 'beginner', label: 'Beginner' },
+  { id: 'intermediate', label: 'Intermediate' },
+  { id: 'senior', label: 'Senior' },
+]
+
+const promptTemplates = [
+  { id: 'balanced', label: 'Balanced review' },
+  { id: 'security_audit', label: 'Security audit' },
+  { id: 'performance_pass', label: 'Performance pass' },
+  { id: 'test_plan', label: 'Test plan' },
+  { id: 'docs_pass', label: 'Documentation pass' },
 ]
 
 const initialAdminFilters = {
@@ -55,6 +77,12 @@ const emptyResult = {
   files: [],
   fixedFiles: [],
   fixedCode: '',
+  detectedLanguages: [],
+  codeSmells: [],
+  securityVulnerabilities: [],
+  generatedTests: [],
+  generatedDocumentation: [],
+  comparison: { summary: '', regressions: [], improvements: [], recommendation: '' },
   summary: ''
 }
 
@@ -210,6 +238,9 @@ function App() {
   const [usage, setUsage] = useState({ used: 0, limit: 0, remaining: 0 })
   const [reviews, setReviews] = useState([])
   const [projects, setProjects] = useState([])
+  const [workspaces, setWorkspaces] = useState([])
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
+  const [teamDetails, setTeamDetails] = useState(null)
   const [models, setModels] = useState(fallbackModels)
   const [adminStats, setAdminStats] = useState(null)
   const [adminAnalytics, setAdminAnalytics] = useState(null)
@@ -221,6 +252,8 @@ function App() {
   const [files, setFiles] = useState([{ path: 'src/app.js', content: starterCode }])
   const [githubRepoUrl, setGithubRepoUrl] = useState('')
   const [pullRequestUrl, setPullRequestUrl] = useState('')
+  const [beforeCode, setBeforeCode] = useState('')
+  const [afterCode, setAfterCode] = useState('')
   const [sourceMode, setSourceMode] = useState('paste')
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [newProjectName, setNewProjectName] = useState('')
@@ -228,12 +261,28 @@ function App() {
   const [result, setResult] = useState(emptyResult)
   const [depth, setDepth] = useState('standard')
   const [model, setModel] = useState(fallbackModels[0].id)
+  const [aiOptions, setAiOptions] = useState({
+    focusAreas: [],
+    customRules: '',
+    organizationStandards: '',
+    promptTemplate: 'balanced',
+    explanationLevel: 'intermediate',
+    generateTests: false,
+    generateDocumentation: false,
+    detectCodeSmells: true,
+    detectSecurityVulnerabilities: true,
+    streamResponse: true,
+  })
   const [resultView, setResultView] = useState('report')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [reviewLoadingSource, setReviewLoadingSource] = useState('')
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
+  const [pendingInviteToken, setPendingInviteToken] = useState('')
+  const [securityForm, setSecurityForm] = useState({ currentPassword: '', newPassword: '', resetEmail: '', resetToken: '', resetPassword: '', verifyToken: '' })
+  const [profileForm, setProfileForm] = useState({ name: '', bio: '', avatarUrl: '' })
+  const [workspaceForm, setWorkspaceForm] = useState({ name: '', inviteEmail: '', inviteRole: 'member', inviteToken: '' })
   const sourceModeRef = useRef(sourceMode)
 
   const api = useMemo(() => {
@@ -271,6 +320,9 @@ function App() {
     setUsage({ used: 0, limit: 0, remaining: 0 })
     setReviews([])
     setProjects([])
+    setWorkspaces([])
+    setSelectedWorkspaceId('')
+    setTeamDetails(null)
     setAdminStats(null)
     setAdminAnalytics(null)
     setAdminUsers([])
@@ -322,6 +374,13 @@ function App() {
       setUsage(profileResponse.data.usage)
       setReviews(reviewsResponse.data.reviews)
       setProjects(projectsResponse.data.projects)
+      setWorkspaces(profileResponse.data.workspaces || [])
+      setSelectedWorkspaceId(current => current || String(profileResponse.data.workspaces?.[0]?.id || ''))
+      setProfileForm({
+        name: profileResponse.data.user.name || '',
+        bio: profileResponse.data.user.bio || '',
+        avatarUrl: profileResponse.data.user.avatarUrl || ''
+      })
       setModels(modelsResponse.data.models)
       setAdminStats(null)
       setAdminAnalytics(null)
@@ -344,10 +403,55 @@ function App() {
     }
   }, [api, loadAdminData, signOut])
 
+  const verifyEmailToken = useCallback(async (verificationToken) => {
+    try {
+      const response = await api.post('/auth/verify-email', { token: verificationToken })
+      if (user) setUser(response.data.user)
+      setNotice('Email verified.')
+      setSecurityForm(current => ({ ...current, verifyToken: '' }))
+      if (token) await loadAppData()
+      if (!token) setPublicView('login')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to verify email.')
+      setSecurityForm(current => ({ ...current, verifyToken: '' }))
+    }
+  }, [api, loadAppData, token, user])
+
   useEffect(() => {
     if (!token) return
     loadAppData()
   }, [token, loadAppData])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const oauthToken = params.get('oauthToken')
+    const oauthError = params.get('oauthError')
+    const resetToken = params.get('resetToken')
+    const verifyToken = params.get('verifyToken')
+    const inviteToken = params.get('inviteToken')
+
+    if (!oauthToken && !oauthError && !resetToken && !verifyToken && !inviteToken) return
+
+    if (oauthToken) {
+      window.localStorage.setItem(TOKEN_KEY, oauthToken)
+      window.localStorage.removeItem(LEGACY_TOKEN_KEY)
+      setToken(oauthToken)
+      setNotice('Signed in with Google.')
+    }
+
+    if (oauthError) setError(oauthError)
+    if (resetToken) {
+      setSecurityForm(current => ({ ...current, resetToken }))
+      setPublicView('reset')
+    }
+    if (verifyToken) verifyEmailToken(verifyToken)
+    if (inviteToken) {
+      setPendingInviteToken(inviteToken)
+      if (!token) setPublicView('login')
+    }
+
+    window.history.replaceState({}, document.title, window.location.pathname)
+  }, [token, verifyEmailToken])
 
   async function handleAuth(event) {
     event.preventDefault()
@@ -368,6 +472,11 @@ function App() {
       setToken(response.data.token)
       setUser(response.data.user)
       setActivePage(response.data.user.role === 'admin' ? 'admin' : 'dashboard')
+      if (!response.data.user.emailVerified && response.data.verificationSent) {
+        setNotice('Account created. Check your email to verify your address.')
+      } else if (!response.data.user.emailVerified) {
+        setNotice('Account created. You can send a verification email from Settings.')
+      }
     } catch (error) {
       setError(error.response?.data?.error || 'Authentication failed.')
     } finally {
@@ -401,6 +510,7 @@ function App() {
         depth,
         model,
         projectId: selectedProjectId || null,
+        aiOptions,
       }
 
       if (sourceAtStart === 'paste') {
@@ -419,24 +529,32 @@ function App() {
         payload.githubUrl = pullRequestUrl
       }
 
-      const response = await api.post('/ai/get-review', payload)
-      const result = hydrateReviewResult(response.data.result, response.data.review, response.data.savedReview?.files || [])
-      setUsage(response.data.usage)
-      setReviews(current => [response.data.savedReview, ...current.filter(item => item.id !== response.data.savedReview.id)])
+      if (sourceAtStart === 'compare_versions') {
+        payload.beforeCode = beforeCode
+        payload.afterCode = afterCode
+      }
+
+      const responseData = aiOptions.streamResponse
+        ? await streamReviewRequest(payload, sourceAtStart)
+        : (await api.post('/ai/get-review', payload)).data
+
+      const result = hydrateReviewResult(responseData.result, responseData.review, responseData.savedReview?.files || [])
+      setUsage(responseData.usage)
+      setReviews(current => [responseData.savedReview, ...current.filter(item => item.id !== responseData.savedReview.id)])
 
       if (sourceModeRef.current === sourceAtStart) {
-        setReview(result.markdown || response.data.review)
+        setReview(result.markdown || responseData.review)
         setResult(result)
         setResultView('report')
       }
 
       setNotice(sourceModeRef.current === sourceAtStart
-        ? response.data.fallbackUsed
-          ? `Review completed with ${response.data.model} because the selected model was busy.`
+        ? responseData.fallbackUsed
+          ? `Review completed with ${responseData.model} because the selected model was busy.`
           : 'Review completed and saved.'
         : 'Review completed and saved to History.')
     } catch (error) {
-      setError(error.response?.data?.error || 'Unable to generate a review.')
+      setError(error.response?.data?.error || error.message || 'Unable to generate a review.')
       if (error.response?.data?.usage) {
         setUsage(error.response.data.usage)
       }
@@ -444,6 +562,58 @@ function App() {
       setIsLoading(false)
       setReviewLoadingSource('')
     }
+  }
+
+  async function streamReviewRequest(payload, sourceAtStart) {
+    const response = await fetch(`${API_URL}/ai/get-review-stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    })
+
+    if (!response.ok || !response.body) {
+      throw new Error('Streaming request failed.')
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let streamedText = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.trim()) continue
+        const event = JSON.parse(line)
+        if (event.type === 'chunk') {
+          streamedText += event.text
+          if (sourceModeRef.current === sourceAtStart) {
+            setReview(streamedText)
+            setResultView('report')
+          }
+        }
+        if (event.type === 'status') {
+          setNotice(event.text)
+        }
+        if (event.type === 'error') {
+          throw new Error(event.error)
+        }
+        if (event.type === 'done') {
+          return event.data
+        }
+      }
+    }
+
+    throw new Error('Streaming response ended before the review was saved.')
   }
 
   async function updateLimit(userId, monthlyLimit) {
@@ -507,6 +677,134 @@ function App() {
     }
   }
 
+  const loadWorkspaceDetails = useCallback(async (workspaceId = selectedWorkspaceId) => {
+    if (!workspaceId) return
+    const response = await api.get(`/teams/workspaces/${workspaceId}`)
+    setTeamDetails(response.data)
+    setSelectedWorkspaceId(String(workspaceId))
+  }, [api, selectedWorkspaceId])
+
+  async function createWorkspace() {
+    try {
+      setError('')
+      const response = await api.post('/teams/workspaces', { name: workspaceForm.name.trim() })
+      setWorkspaces(current => [...current, response.data.workspace])
+      setSelectedWorkspaceId(String(response.data.workspace.id))
+      setWorkspaceForm(current => ({ ...current, name: '' }))
+      setNotice('Workspace created.')
+      await loadWorkspaceDetails(response.data.workspace.id)
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to create workspace.')
+    }
+  }
+
+  async function inviteTeamMember() {
+    try {
+      setError('')
+      const response = await api.post(`/teams/workspaces/${selectedWorkspaceId}/invitations`, {
+        email: workspaceForm.inviteEmail,
+        role: workspaceForm.inviteRole
+      })
+      setWorkspaceForm(current => ({ ...current, inviteEmail: '' }))
+      setNotice(response.data.message || 'Invitation email sent.')
+      await loadWorkspaceDetails(selectedWorkspaceId)
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to invite member.')
+    }
+  }
+
+  const acceptInvitationToken = useCallback(async (invitationToken = workspaceForm.inviteToken) => {
+    try {
+      setError('')
+      await api.post('/teams/invitations/accept', { token: invitationToken })
+      setWorkspaceForm(current => ({ ...current, inviteToken: '' }))
+      setPendingInviteToken('')
+      setNotice('Invitation accepted.')
+      await loadAppData()
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to accept invitation.')
+    }
+  }, [api, loadAppData, workspaceForm.inviteToken])
+
+  useEffect(() => {
+    if (!user || !pendingInviteToken) return
+    acceptInvitationToken(pendingInviteToken)
+  }, [user, pendingInviteToken, acceptInvitationToken])
+
+  async function updateTeamRole(memberId, role) {
+    try {
+      setError('')
+      await api.patch(`/teams/workspaces/${selectedWorkspaceId}/members/${memberId}/role`, { role })
+      setNotice('Team role updated.')
+      await loadWorkspaceDetails(selectedWorkspaceId)
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to update team role.')
+    }
+  }
+
+  async function saveProfile() {
+    try {
+      const response = await api.patch('/auth/me', profileForm)
+      setUser(response.data.user)
+      setNotice('Profile updated.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to update profile.')
+    }
+  }
+
+  async function savePassword() {
+    try {
+      await api.patch('/auth/password', {
+        currentPassword: securityForm.currentPassword,
+        newPassword: securityForm.newPassword
+      })
+      setSecurityForm(current => ({ ...current, currentPassword: '', newPassword: '' }))
+      setNotice('Password updated.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to update password.')
+    }
+  }
+
+  async function requestPasswordReset() {
+    try {
+      await api.post('/auth/forgot-password', { email: securityForm.resetEmail })
+      setNotice('If an account exists, a password reset email has been sent.')
+      setPublicView('login')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to send reset email.')
+    }
+  }
+
+  async function resetPassword() {
+    try {
+      await api.post('/auth/reset-password', {
+        token: securityForm.resetToken,
+        password: securityForm.resetPassword
+      })
+      setNotice('Password reset complete.')
+      setSecurityForm(current => ({ ...current, resetPassword: '', resetToken: '' }))
+      setPublicView('login')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to reset password.')
+    }
+  }
+
+  async function requestEmailVerification() {
+    try {
+      const response = await api.post('/auth/email-verification')
+      setNotice(response.data.message || 'Verification email sent.')
+      if (response.data.alreadyVerified) {
+        await loadAppData()
+      }
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to send verification email.')
+    }
+  }
+
+  async function verifyEmail() {
+    await verifyEmailToken(securityForm.verifyToken)
+  }
+
   async function copyReview() {
     if (!review) return
     await navigator.clipboard.writeText(review)
@@ -532,7 +830,13 @@ function App() {
       severityCounts: countSeverities(item.comments || []),
       checklist: item.checklist || [],
       comments: item.comments || [],
-      fixedCode: item.fixedCode || ''
+      fixedCode: item.fixedCode || '',
+      detectedLanguages: item.aiOptions?.detectedLanguages || item.files?.map(file => file.language).filter(Boolean) || [],
+      codeSmells: item.aiOptions?.codeSmells || [],
+      securityVulnerabilities: item.aiOptions?.securityVulnerabilities || [],
+      generatedTests: item.aiOptions?.generatedTests || [],
+      generatedDocumentation: item.aiOptions?.generatedDocumentation || [],
+      comparison: item.aiOptions?.comparison || emptyResult.comparison
     }, item.review, item.files || [])
     setCode(item.code)
     setFiles(item.files?.length ? item.files : [{ path: 'reviewed-code.js', content: item.code }])
@@ -584,6 +888,9 @@ function App() {
       setGithubRepoUrl('')
     } else if (sourceMode === 'pull_request') {
       setPullRequestUrl('')
+    } else if (sourceMode === 'compare_versions') {
+      setBeforeCode('')
+      setAfterCode('')
     } else {
       setFiles([{ path: 'src/app.js', content: '' }])
     }
@@ -603,6 +910,11 @@ function App() {
           authForm={authForm}
           setAuthForm={setAuthForm}
           handleAuth={handleAuth}
+          securityForm={securityForm}
+          setSecurityForm={setSecurityForm}
+          requestPasswordReset={requestPasswordReset}
+          resetPassword={resetPassword}
+          verifyEmail={verifyEmail}
           isLoading={isLoading}
           error={error}
           theme={theme}
@@ -635,6 +947,10 @@ function App() {
         setGithubRepoUrl={setGithubRepoUrl}
         pullRequestUrl={pullRequestUrl}
         setPullRequestUrl={setPullRequestUrl}
+        beforeCode={beforeCode}
+        setBeforeCode={setBeforeCode}
+        afterCode={afterCode}
+        setAfterCode={setAfterCode}
         sourceMode={sourceMode}
         setSourceMode={changeSourceMode}
         projects={projects}
@@ -656,6 +972,8 @@ function App() {
         model={model}
         setModel={setModel}
         models={models}
+        aiOptions={aiOptions}
+        setAiOptions={setAiOptions}
         usage={usage}
         reviewCode={reviewCode}
         clearCurrentSource={clearCurrentSource}
@@ -664,6 +982,22 @@ function App() {
       />
     ),
     history: <HistoryPage reviews={reviews} loadReview={loadReview} />,
+    team: (
+      <TeamPage
+        workspaces={workspaces}
+        selectedWorkspaceId={selectedWorkspaceId}
+        setSelectedWorkspaceId={setSelectedWorkspaceId}
+        teamDetails={teamDetails}
+        loadWorkspaceDetails={loadWorkspaceDetails}
+        workspaceForm={workspaceForm}
+        setWorkspaceForm={setWorkspaceForm}
+        createWorkspace={createWorkspace}
+        inviteTeamMember={inviteTeamMember}
+        acceptInvitation={acceptInvitationToken}
+        updateTeamRole={updateTeamRole}
+      />
+    ),
+    profile: <ProfilePage user={user} usage={usage} reviews={reviews} profileForm={profileForm} setProfileForm={setProfileForm} saveProfile={saveProfile} />,
     admin: (
       <AdminPage
         stats={adminStats}
@@ -679,7 +1013,19 @@ function App() {
         exportAdminReport={exportAdminReport}
       />
     ),
-    settings: <SettingsPage theme={theme} setTheme={setTheme} user={user} usage={usage} signOut={signOut} />,
+    settings: (
+      <SettingsPage
+        theme={theme}
+        setTheme={setTheme}
+        user={user}
+        usage={usage}
+        signOut={signOut}
+        securityForm={securityForm}
+        setSecurityForm={setSecurityForm}
+        savePassword={savePassword}
+        requestEmailVerification={requestEmailVerification}
+      />
+    ),
   }
 
   return (
@@ -696,8 +1042,8 @@ function App() {
 
         <nav className="nav-list">
           {(user.role === 'admin'
-            ? [['admin', 'Admin Dashboard'], ['review', 'Review'], ['history', 'History'], ['settings', 'Settings']]
-            : [['dashboard', 'Dashboard'], ['review', 'Review'], ['history', 'History'], ['settings', 'Settings']]
+            ? [['admin', 'Admin Dashboard'], ['review', 'Review'], ['history', 'History'], ['team', 'Team'], ['profile', 'Profile'], ['settings', 'Settings']]
+            : [['dashboard', 'Dashboard'], ['review', 'Review'], ['history', 'History'], ['team', 'Team'], ['profile', 'Profile'], ['settings', 'Settings']]
           ).map(([page, label]) => (
             <button key={page} type="button" className={activePage === page ? 'nav-item active' : 'nav-item'} onClick={() => setActivePage(page)}>
               {label}
@@ -722,6 +1068,18 @@ function App() {
 function PublicExperience(props) {
   if (props.publicView === 'login' || props.publicView === 'register') {
     return <AuthPage {...props} mode={props.publicView} />
+  }
+
+  if (props.publicView === 'forgot') {
+    return <ForgotPasswordPage {...props} />
+  }
+
+  if (props.publicView === 'reset') {
+    return <ResetPasswordPage {...props} />
+  }
+
+  if (props.publicView === 'verify') {
+    return <VerifyEmailPage {...props} />
   }
 
   return <LandingPage setPublicView={props.setPublicView} theme={props.theme} setTheme={props.setTheme} />
@@ -792,18 +1150,71 @@ function LandingPage({ setPublicView, theme, setTheme }) {
 
 function AuthPage({ mode, setPublicView, authForm, setAuthForm, handleAuth, isLoading }) {
   const isLogin = mode === 'login'
+
+  function continueWithGoogle() {
+    window.location.href = `${API_URL}/auth/oauth/google/start`
+  }
+
   return (
     <main className="auth-shell">
       <section className="auth-panel">
         <button type="button" className="back-button" onClick={() => setPublicView('landing')}>Back</button>
         <div><p className="eyebrow">Account access</p><h1>{isLogin ? `Sign in to ${APP_NAME}` : `Create your ${APP_NAME} account`}</h1><p className="panel-copy">{isLogin ? 'Continue to your review workspace.' : 'Start saving AI code reviews to your workspace.'}</p></div>
+        <div className="auth-oauth">
+          <button type="button" className="ghost-button" onClick={continueWithGoogle}>Continue with Google</button>
+          <button type="button" className="ghost-button" disabled>GitHub coming soon</button>
+        </div>
+        <div className="auth-divider"><span>or</span></div>
         <form className="auth-form" onSubmit={handleAuth}>
           {!isLogin && <label><span>Name</span><input value={authForm.name} onChange={event => setAuthForm({ ...authForm, name: event.target.value })} /></label>}
           <label><span>Email</span><input type="email" value={authForm.email} onChange={event => setAuthForm({ ...authForm, email: event.target.value })} /></label>
           <label><span>Password</span><input type="password" value={authForm.password} onChange={event => setAuthForm({ ...authForm, password: event.target.value })} /></label>
           <button type="submit" className="primary-button" disabled={isLoading}>{isLoading ? 'Please wait...' : isLogin ? 'Sign In' : 'Create Account'}</button>
         </form>
+        {isLogin && <button type="button" className="text-button" onClick={() => setPublicView('forgot')}>Forgot password?</button>}
         <button type="button" className="text-button" onClick={() => setPublicView(isLogin ? 'register' : 'login')}>{isLogin ? 'Need an account? Create one' : 'Already have an account? Sign in'}</button>
+      </section>
+    </main>
+  )
+}
+
+function ForgotPasswordPage({ setPublicView, securityForm, setSecurityForm, requestPasswordReset }) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel">
+        <button type="button" className="back-button" onClick={() => setPublicView('login')}>Back</button>
+        <div><p className="eyebrow">Account recovery</p><h1>Reset your password</h1><p className="panel-copy">Enter your account email and we will send a secure reset link.</p></div>
+        <div className="auth-form">
+          <label><span>Email</span><input type="email" value={securityForm.resetEmail} onChange={event => setSecurityForm({ ...securityForm, resetEmail: event.target.value })} /></label>
+          <button type="button" className="primary-button" onClick={requestPasswordReset}>Send Reset Link</button>
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function ResetPasswordPage({ setPublicView, securityForm, setSecurityForm, resetPassword }) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel">
+        <button type="button" className="back-button" onClick={() => setPublicView('login')}>Back</button>
+        <div><p className="eyebrow">Secure reset</p><h1>Choose a new password</h1><p className="panel-copy">Use a strong password with at least 8 characters.</p></div>
+        <div className="auth-form">
+          <label><span>New password</span><input type="password" value={securityForm.resetPassword} onChange={event => setSecurityForm({ ...securityForm, resetPassword: event.target.value })} /></label>
+          <button type="button" className="primary-button" onClick={resetPassword}>Reset Password</button>
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function VerifyEmailPage({ setPublicView, verifyEmail }) {
+  return (
+    <main className="auth-shell">
+      <section className="auth-panel">
+        <button type="button" className="back-button" onClick={() => setPublicView('login')}>Back</button>
+        <div><p className="eyebrow">Email verification</p><h1>Confirm your email</h1><p className="panel-copy">Click below to complete verification for this account.</p></div>
+        <button type="button" className="primary-button" onClick={verifyEmail}>Verify Email</button>
       </section>
     </main>
   )
@@ -840,6 +1251,7 @@ function ReviewPage(props) {
 
       <section className="project-create"><input placeholder="Create project workspace" value={props.newProjectName} onChange={event => props.setNewProjectName(event.target.value)} /><button type="button" className="ghost-button" onClick={props.createProject}>Create Project</button></section>
       <section className="model-note"><strong>{selectedModel?.name}</strong><span>{selectedModel?.description}</span></section>
+      <AiOptionsPanel aiOptions={props.aiOptions} setAiOptions={props.setAiOptions} />
       <section className="source-tabs">{sourceModes.map(mode => <button key={mode.id} type="button" className={props.sourceMode === mode.id ? 'active' : ''} onClick={() => props.setSourceMode(mode.id)}>{mode.label}</button>)}</section>
 
       <section className="workspace">
@@ -857,7 +1269,44 @@ function ReviewPage(props) {
   )
 }
 
-function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, removeFile, githubRepoUrl, setGithubRepoUrl, pullRequestUrl, setPullRequestUrl }) {
+function AiOptionsPanel({ aiOptions, setAiOptions }) {
+  function toggleFocus(area) {
+    setAiOptions(current => ({
+      ...current,
+      focusAreas: current.focusAreas.includes(area)
+        ? current.focusAreas.filter(item => item !== area)
+        : [...current.focusAreas, area]
+    }))
+  }
+
+  return (
+    <section className="ai-options-panel">
+      <div className="section-heading"><div><h2>AI review configuration</h2><p>Shape the review using focus areas, standards, templates, and generated assets.</p></div></div>
+      <div className="ai-options-grid">
+        <div className="option-block">
+          <span>Review focus</span>
+          <div className="chip-list">{focusOptions.map(option => <button key={option.id} type="button" className={aiOptions.focusAreas.includes(option.id) ? 'chip active' : 'chip'} onClick={() => toggleFocus(option.id)}>{option.label}</button>)}</div>
+        </div>
+        <label><span>Prompt template</span><select value={aiOptions.promptTemplate} onChange={event => setAiOptions({ ...aiOptions, promptTemplate: event.target.value })}>{promptTemplates.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+        <label><span>Explanation level</span><select value={aiOptions.explanationLevel} onChange={event => setAiOptions({ ...aiOptions, explanationLevel: event.target.value })}>{explanationLevels.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label>
+        <div className="option-block">
+          <span>Generated outputs</span>
+          <div className="toggle-list">
+            <label><input type="checkbox" checked={aiOptions.generateTests} onChange={event => setAiOptions({ ...aiOptions, generateTests: event.target.checked })} /> Unit tests</label>
+            <label><input type="checkbox" checked={aiOptions.generateDocumentation} onChange={event => setAiOptions({ ...aiOptions, generateDocumentation: event.target.checked })} /> Documentation</label>
+            <label><input type="checkbox" checked={aiOptions.detectCodeSmells} onChange={event => setAiOptions({ ...aiOptions, detectCodeSmells: event.target.checked })} /> Code smells</label>
+            <label><input type="checkbox" checked={aiOptions.detectSecurityVulnerabilities} onChange={event => setAiOptions({ ...aiOptions, detectSecurityVulnerabilities: event.target.checked })} /> Vulnerabilities</label>
+            <label><input type="checkbox" checked={aiOptions.streamResponse} onChange={event => setAiOptions({ ...aiOptions, streamResponse: event.target.checked })} /> Streaming response</label>
+          </div>
+        </div>
+        <label className="span-two"><span>Custom review rules</span><textarea value={aiOptions.customRules} onChange={event => setAiOptions({ ...aiOptions, customRules: event.target.value })} placeholder="Example: prefer early returns, avoid global mutable state, require input validation." /></label>
+        <label className="span-two"><span>Organization coding standards</span><textarea value={aiOptions.organizationStandards} onChange={event => setAiOptions({ ...aiOptions, organizationStandards: event.target.value })} placeholder="Example: use camelCase, write tests for public functions, sanitize all user input." /></label>
+      </div>
+    </section>
+  )
+}
+
+function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, removeFile, githubRepoUrl, setGithubRepoUrl, pullRequestUrl, setPullRequestUrl, beforeCode, setBeforeCode, afterCode, setAfterCode }) {
   if (sourceMode === 'github_repo') {
     return <div className="source-form"><label><span>Repository URL</span><input placeholder="https://github.com/owner/repo" value={githubRepoUrl} onChange={event => setGithubRepoUrl(event.target.value)} /></label><p>Reviews up to the first reviewable source files from a public repository.</p></div>
   }
@@ -868,6 +1317,10 @@ function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, re
 
   if (sourceMode === 'multi_file') {
     return <div className="multi-file-editor">{files.map((file, index) => <div className="file-card" key={index}><div className="file-card-header"><input value={file.path} onChange={event => updateFile(index, { path: event.target.value })} /><button type="button" className="ghost-button" onClick={() => removeFile(index)} disabled={files.length === 1}>Remove</button></div><textarea value={file.content} onChange={event => updateFile(index, { content: event.target.value })} /></div>)}<button type="button" className="ghost-button" onClick={addFile}>Add File</button></div>
+  }
+
+  if (sourceMode === 'compare_versions') {
+    return <div className="compare-editor"><label><span>Before version</span><textarea value={beforeCode} onChange={event => setBeforeCode(event.target.value)} placeholder="Paste the current or old version here." /></label><label><span>After version</span><textarea value={afterCode} onChange={event => setAfterCode(event.target.value)} placeholder="Paste the proposed or new version here." /></label></div>
   }
 
   return (
@@ -886,15 +1339,39 @@ function ReviewResults({ review, result, resultView, setResultView, error, isLoa
       {!isLoading && !error && review && (
         <div className="results-stack">
           <ResultSummary result={result} />
-          <div className="source-tabs compact-tabs">{['report', 'comments', 'checklist', 'diff'].map(view => <button key={view} type="button" className={resultView === view ? 'active' : ''} onClick={() => setResultView(view)}>{view}</button>)}</div>
+          <div className="source-tabs compact-tabs">{['report', 'comments', 'checklist', 'diff', 'ai', 'tests', 'docs'].map(view => <button key={view} type="button" className={resultView === view ? 'active' : ''} onClick={() => setResultView(view)}>{view}</button>)}</div>
           {resultView === 'report' && <Markdown rehypePlugins={[rehypeHighlight]}>{review}</Markdown>}
           {resultView === 'comments' && <InlineComments comments={result.comments} score={result.score} />}
           {resultView === 'checklist' && <Checklist checklist={result.checklist} score={result.score} />}
           {resultView === 'diff' && <DiffView files={result.files} fixedFiles={result.fixedFiles} fixes={result.fixes} before={code} after={result.fixedCode} score={result.score} />}
+          {resultView === 'ai' && <AiFindings result={result} />}
+          {resultView === 'tests' && <GeneratedFiles items={result.generatedTests} emptyTitle="No unit tests generated" emptyText="Enable Unit tests in AI review configuration and run the review again." />}
+          {resultView === 'docs' && <GeneratedFiles items={result.generatedDocumentation} emptyTitle="No documentation generated" emptyText="Enable Documentation in AI review configuration and run the review again." />}
         </div>
       )}
     </div>
   )
+}
+
+function AiFindings({ result }) {
+  const languages = result.detectedLanguages || []
+  const smells = result.codeSmells || []
+  const vulnerabilities = result.securityVulnerabilities || []
+  const comparison = result.comparison || {}
+
+  return (
+    <div className="ai-findings">
+      <section><h3>Detected language</h3>{languages.length ? <div className="chip-list">{languages.map(language => <span className="chip active" key={language}>{language}</span>)}</div> : <EmptyState title="Language not detected" text="The model did not return language metadata for this review." />}</section>
+      <section><h3>Code smells</h3>{smells.length ? <div className="comment-list">{smells.map((item, index) => <article className="comment-card" key={`${item.file}-${item.line}-${index}`}><div><strong>{item.file}:{item.line} - {item.title}</strong></div><p>{item.impact}</p><small>{item.fix}</small></article>)}</div> : <EmptyState title="No code smells detected" text="No maintainability smells were returned for this review." />}</section>
+      <section><h3>Security vulnerabilities</h3>{vulnerabilities.length ? <div className="comment-list">{vulnerabilities.map((item, index) => <article className="comment-card" key={`${item.file}-${item.line}-${index}`}><div><span className={`severity-pill ${item.severity}`}>{item.severity}</span><strong>{item.file}:{item.line} - {item.title}</strong></div><p>{item.risk}</p><small>{item.mitigation}</small></article>)}</div> : <EmptyState title="No vulnerabilities detected" text="No security vulnerabilities were returned for this review." />}</section>
+      {(comparison.summary || comparison.regressions?.length || comparison.improvements?.length) && <section><h3>Version comparison</h3><div className="comment-card"><p>{comparison.summary}</p><small>Recommendation: {comparison.recommendation || 'not specified'}</small>{comparison.regressions?.length > 0 && <ul>{comparison.regressions.map(item => <li key={item}>{item}</li>)}</ul>}{comparison.improvements?.length > 0 && <ul>{comparison.improvements.map(item => <li key={item}>{item}</li>)}</ul>}</div></section>}
+    </div>
+  )
+}
+
+function GeneratedFiles({ items = [], emptyTitle, emptyText }) {
+  if (!items.length) return <EmptyState title={emptyTitle} text={emptyText} />
+  return <div className="generated-files">{items.map((item, index) => <article key={`${item.file}-${index}`}><div><strong>{item.file}</strong>{item.framework && <span className="pill">{item.framework}</span>}</div><pre>{item.content}</pre></article>)}</div>
 }
 
 function ResultSummary({ result }) {
@@ -1185,8 +1662,80 @@ function AdminReviewHistory({ reviews, hasSelection }) {
   return <div className="admin-history-list">{reviews.map(item => <article key={item.id} className="admin-history-card"><div><strong>{item.projectName || item.sourceType}</strong><span className="score-chip">Score {item.score || 0}</span></div><small>{formatDate(item.createdAt)} - {item.model} - {item.depth}</small><p>{item.review.slice(0, 220)}</p></article>)}</div>
 }
 
-function SettingsPage({ theme, setTheme, user, usage, signOut }) {
-  return <div className="page-stack"><PageTitle eyebrow="Preferences" title="Account settings" /><section className="settings-grid"><div className="wide-panel"><div className="section-heading"><div><h2>Profile</h2><p>Your current workspace identity.</p></div></div><dl className="detail-list"><div><dt>Name</dt><dd>{user.name}</dd></div><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Role</dt><dd>{user.role}</dd></div><div><dt>Monthly usage</dt><dd>{usage.used}/{usage.limit}</dd></div></dl><button type="button" className="ghost-button top-space" onClick={signOut}>Sign Out</button></div><div className="wide-panel"><div className="section-heading"><div><h2>Appearance</h2><p>Choose the interface theme for this browser.</p></div></div><div className="segmented-control"><button type="button" className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>Dark</button><button type="button" className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>Light</button></div></div></section></div>
+function TeamPage({ workspaces, selectedWorkspaceId, setSelectedWorkspaceId, teamDetails, loadWorkspaceDetails, workspaceForm, setWorkspaceForm, createWorkspace, inviteTeamMember, updateTeamRole }) {
+  const canManage = teamDetails?.canManage
+  useEffect(() => {
+    if (selectedWorkspaceId) loadWorkspaceDetails(selectedWorkspaceId)
+  }, [loadWorkspaceDetails, selectedWorkspaceId])
+
+  return (
+    <div className="page-stack">
+      <PageTitle eyebrow="Teams" title="Workspace collaboration" />
+      <section className="settings-grid">
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Workspaces</h2><p>Create or select a team workspace.</p></div></div>
+          <label><span>Current workspace</span><select value={selectedWorkspaceId} onChange={event => setSelectedWorkspaceId(event.target.value)}>{workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.name} - {workspace.role}</option>)}</select></label>
+          <div className="project-create top-space"><input placeholder="New workspace name" value={workspaceForm.name} onChange={event => setWorkspaceForm({ ...workspaceForm, name: event.target.value })} /><button type="button" className="ghost-button" onClick={createWorkspace}>Create</button></div>
+        </div>
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Invite members</h2><p>Owners and admins can invite teammates.</p></div></div>
+          <label><span>Email</span><input value={workspaceForm.inviteEmail} onChange={event => setWorkspaceForm({ ...workspaceForm, inviteEmail: event.target.value })} /></label>
+          <label><span>Role</span><select value={workspaceForm.inviteRole} onChange={event => setWorkspaceForm({ ...workspaceForm, inviteRole: event.target.value })}><option value="member">Member</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select></label>
+          <button type="button" className="ghost-button top-space" onClick={inviteTeamMember} disabled={!canManage}>Send Invitation</button>
+        </div>
+      </section>
+      <section className="wide-panel">
+        <div className="section-heading"><div><h2>Members</h2><p>Manage workspace roles without changing global system admin access.</p></div></div>
+        <div className="compact-list">
+          {(teamDetails?.members || []).map(member => <div key={member.userId}><span><strong>{member.name}</strong><small>{member.email}</small></span><span>{member.role}</span><span>{canManage && member.role !== 'owner' ? <select value={member.role} onChange={event => updateTeamRole(member.userId, event.target.value)}><option value="member">Member</option><option value="reviewer">Reviewer</option><option value="admin">Admin</option></select> : 'Locked'}</span></div>)}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ProfilePage({ user, usage, reviews, profileForm, setProfileForm, saveProfile }) {
+  return (
+    <div className="page-stack">
+      <PageTitle eyebrow="Profile" title={user.name} />
+      <section className="settings-grid">
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Public profile</h2><p>Keep your reviewer identity up to date.</p></div></div>
+          <label><span>Name</span><input value={profileForm.name} onChange={event => setProfileForm({ ...profileForm, name: event.target.value })} /></label>
+          <label><span>Avatar URL</span><input value={profileForm.avatarUrl} onChange={event => setProfileForm({ ...profileForm, avatarUrl: event.target.value })} /></label>
+          <label><span>Bio</span><textarea className="profile-textarea" value={profileForm.bio} onChange={event => setProfileForm({ ...profileForm, bio: event.target.value })} /></label>
+          <button type="button" className="ghost-button top-space" onClick={saveProfile}>Save Profile</button>
+        </div>
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Activity</h2><p>Your account status and review activity.</p></div></div>
+          <dl className="detail-list"><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Email verified</dt><dd>{user.emailVerified ? 'Yes' : 'No'}</dd></div><div><dt>Global role</dt><dd>{user.role}</dd></div><div><dt>Monthly usage</dt><dd>{usage.used}/{usage.limit}</dd></div><div><dt>Saved reviews</dt><dd>{reviews.length}</dd></div></dl>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function SettingsPage({ theme, setTheme, user, usage, signOut, securityForm, setSecurityForm, savePassword, requestEmailVerification }) {
+  return (
+    <div className="page-stack">
+      <PageTitle eyebrow="Preferences" title="Account settings" />
+      <section className="settings-grid">
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Security</h2><p>Password, email verification, and account protection.</p></div></div>
+          <dl className="detail-list"><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Email verified</dt><dd>{user.emailVerified ? 'Yes' : 'No'}</dd></div><div><dt>Monthly usage</dt><dd>{usage.used}/{usage.limit}</dd></div></dl>
+          {!user.emailVerified && <button type="button" className="ghost-button top-space" onClick={requestEmailVerification}>Send Verification Email</button>}
+          <label className="top-space"><span>Current password</span><input type="password" value={securityForm.currentPassword} onChange={event => setSecurityForm({ ...securityForm, currentPassword: event.target.value })} /></label>
+          <label><span>New password</span><input type="password" value={securityForm.newPassword} onChange={event => setSecurityForm({ ...securityForm, newPassword: event.target.value })} /></label>
+          <button type="button" className="ghost-button top-space" onClick={savePassword}>Update Password</button>
+          <button type="button" className="ghost-button top-space" onClick={signOut}>Sign Out</button>
+        </div>
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Appearance</h2><p>Choose the interface theme for this browser.</p></div></div>
+          <div className="segmented-control"><button type="button" className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}>Dark</button><button type="button" className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}>Light</button></div>
+        </div>
+      </section>
+    </div>
+  )
 }
 
 function PageTitle({ eyebrow, title, children }) {

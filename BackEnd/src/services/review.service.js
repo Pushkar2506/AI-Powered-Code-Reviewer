@@ -1,6 +1,6 @@
 const { query } = require('../config/database')
 
-async function saveReview({ userId, projectId, code, review, model, depth, sourceType, sourceUrl, score, fixedCode, checklist, comments, files }) {
+async function saveReview({ userId, projectId, code, review, model, depth, sourceType, sourceUrl, score, fixedCode, checklist, comments, files, aiOptions }) {
     const result = await query(
         `INSERT INTO reviews (
             user_id,
@@ -15,10 +15,11 @@ async function saveReview({ userId, projectId, code, review, model, depth, sourc
             fixed_code,
             checklist,
             comments,
-            files
+            files,
+            ai_options
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb)
-         RETURNING id, project_id, code, review, model, depth, source_type, source_url, score, fixed_code, checklist, comments, files, created_at`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb)
+         RETURNING id, project_id, code, review, model, depth, source_type, source_url, score, fixed_code, checklist, comments, files, ai_options, created_at`,
         [
             userId,
             projectId || null,
@@ -32,7 +33,8 @@ async function saveReview({ userId, projectId, code, review, model, depth, sourc
             fixedCode || null,
             JSON.stringify(checklist || []),
             JSON.stringify(comments || []),
-            JSON.stringify(files || [])
+            JSON.stringify(files || []),
+            JSON.stringify(aiOptions || {})
         ]
     )
 
@@ -55,6 +57,7 @@ async function getReviewsByUser(userId) {
             reviews.checklist,
             reviews.comments,
             reviews.files,
+            reviews.ai_options,
             reviews.created_at,
             projects.name AS project_name
          FROM reviews
@@ -137,6 +140,7 @@ function mapReview(review) {
         checklist: review.checklist || [],
         comments: review.comments || [],
         files: review.files || [],
+        aiOptions: review.ai_options || {},
         createdAt: review.created_at
     }
 }

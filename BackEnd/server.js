@@ -21,8 +21,18 @@ const PORT = process.env.PORT || 3000;
 
 initDatabase()
     .then(() => {
-        app.listen(PORT, () => {
+        const server = app.listen(PORT, () => {
             console.log(`Server is running on http://localhost:${PORT}`);
+        })
+
+        server.on('error', error => {
+            if (error.code === 'EADDRINUSE') {
+                console.error(`Port ${PORT} is already in use. Stop the other backend server or set a different PORT in .env.`)
+                process.exit(1)
+            }
+
+            console.error('Server failed to start:', error.message)
+            process.exit(1)
         })
     })
     .catch(error => {

@@ -50,12 +50,28 @@ async function initDatabase() {
             password_hash TEXT NOT NULL,
             role VARCHAR(20) NOT NULL DEFAULT 'user',
             status VARCHAR(20) NOT NULL DEFAULT 'active',
+            email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+            avatar_url TEXT,
+            bio TEXT,
+            two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            two_factor_code VARCHAR(12),
+            two_factor_expires_at TIMESTAMPTZ,
+            two_factor_secret_encrypted TEXT,
+            two_factor_confirmed_at TIMESTAMPTZ,
             monthly_limit INTEGER NOT NULL DEFAULT 20,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
     `)
 
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active';`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE;`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT;`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN NOT NULL DEFAULT FALSE;`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_code VARCHAR(12);`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_expires_at TIMESTAMPTZ;`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_secret_encrypted TEXT;`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_confirmed_at TIMESTAMPTZ;`)
 
     const adminPasswordHash = await bcrypt.hash(ADMIN_PASSWORD, 12)
     const monthlyLimit = Number(process.env.DEFAULT_MONTHLY_LIMIT) || 20
@@ -72,6 +88,8 @@ async function initDatabase() {
             monthly_limit = GREATEST(users.monthly_limit, EXCLUDED.monthly_limit)`,
         [ADMIN_NAME, ADMIN_EMAIL, adminPasswordHash, monthlyLimit]
     )
+
+    await query(`UPDATE users SET email_verified = TRUE WHERE email = $1`, [ADMIN_EMAIL])
 
     await query(
         `UPDATE users
@@ -92,6 +110,65 @@ async function initDatabase() {
     `)
 
     await query(`
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(160) NOT NULL,
+            owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS workspace_members (
+            id SERIAL PRIMARY KEY,
+            workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role VARCHAR(20) NOT NULL DEFAULT 'member',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (workspace_id, user_id)
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS invitations (
+            id SERIAL PRIMARY KEY,
+            workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            invited_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            email VARCHAR(255) NOT NULL,
+            role VARCHAR(20) NOT NULL DEFAULT 'member',
+            token VARCHAR(80) UNIQUE NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            expires_at TIMESTAMPTZ NOT NULL,
+            accepted_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            type VARCHAR(40) NOT NULL,
+            token VARCHAR(80) UNIQUE NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            used_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS oauth_accounts (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            provider VARCHAR(40) NOT NULL,
+            provider_user_id VARCHAR(255) NOT NULL,
+            email VARCHAR(255) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (provider, provider_user_id)
+        );
+    `)
+
+    await query(`
         CREATE TABLE IF NOT EXISTS reviews (
             id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -107,6 +184,7 @@ async function initDatabase() {
             checklist JSONB NOT NULL DEFAULT '[]'::jsonb,
             comments JSONB NOT NULL DEFAULT '[]'::jsonb,
             files JSONB NOT NULL DEFAULT '[]'::jsonb,
+            ai_options JSONB NOT NULL DEFAULT '{}'::jsonb,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
     `)
@@ -119,6 +197,7 @@ async function initDatabase() {
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS checklist JSONB NOT NULL DEFAULT '[]'::jsonb;`)
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS comments JSONB NOT NULL DEFAULT '[]'::jsonb;`)
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS files JSONB NOT NULL DEFAULT '[]'::jsonb;`)
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS ai_options JSONB NOT NULL DEFAULT '{}'::jsonb;`)
 }
 
 module.exports = {

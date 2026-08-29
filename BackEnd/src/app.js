@@ -7,6 +7,7 @@ const authRoutes = require('./routes/auth.routes')
 const reviewRoutes = require('./routes/review.routes')
 const adminRoutes = require('./routes/admin.routes')
 const projectRoutes = require('./routes/project.routes')
+const teamRoutes = require('./routes/team.routes')
 
 const app = express()
 
@@ -63,6 +64,7 @@ app.use('/ai', aiLimiter, aiRoutes)
 app.use('/auth', authRoutes)
 app.use('/reviews', reviewRoutes)
 app.use('/projects', projectRoutes)
+app.use('/teams', teamRoutes)
 app.use('/admin', adminRoutes)
 
 app.use((req, res) => {

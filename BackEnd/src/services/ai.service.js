@@ -40,6 +40,25 @@ Schema:
     { "path": "path/to/file.js", "content": "single-line escaped complete improved code only when safe" }
   ],
   "fixedCode": "improved complete code when reasonable, otherwise empty string",
+  "detectedLanguages": ["JavaScript"],
+  "codeSmells": [
+    { "file": "path/to/file.js", "line": 1, "title": "short smell", "impact": "why it matters", "fix": "how to improve" }
+  ],
+  "securityVulnerabilities": [
+    { "file": "path/to/file.js", "line": 1, "severity": "critical|high|medium|low", "title": "short vulnerability", "risk": "impact", "mitigation": "fix" }
+  ],
+  "generatedTests": [
+    { "file": "path/to/test.js", "framework": "detected or recommended framework", "content": "complete useful unit test code" }
+  ],
+  "generatedDocumentation": [
+    { "file": "path/to/file.md", "content": "developer documentation or JSDoc/README content" }
+  ],
+  "comparison": {
+    "summary": "empty unless comparing versions",
+    "regressions": [],
+    "improvements": [],
+    "recommendation": "ship|revise|block"
+  },
   "markdown": "full human-readable review in Markdown"
 }
 
@@ -52,11 +71,21 @@ Prefer fixes with short replacement snippets. Only return fixedFiles/fixedCode w
 `
 
 const allowedDepths = new Set(['quick', 'standard', 'deep']);
+const allowedExplanationLevels = new Set(['beginner', 'intermediate', 'senior']);
+const allowedFocusAreas = new Set(['security', 'performance', 'readability', 'tests']);
 const depthInstructions = {
     quick: 'Return no more than 4 comments. Focus only on critical and high-impact problems.',
     standard: 'Return no more than 8 comments. Cover correctness, security, maintainability, performance, and tests.',
     deep: 'Return no more than 14 comments. Be strict about edge cases, security, scalability, tests, and long-term maintenance.',
 };
+
+const templateInstructions = {
+    balanced: 'Run a balanced production code review across correctness, maintainability, security, performance, tests, and documentation.',
+    security_audit: 'Prioritize exploitable vulnerabilities, unsafe data handling, auth/session risks, injection, dependency and configuration risks.',
+    performance_pass: 'Prioritize algorithmic complexity, memory use, repeated work, rendering/network bottlenecks, and scalability.',
+    test_plan: 'Prioritize missing test cases, fragile behavior, regressions, mocking boundaries, and test implementation.',
+    docs_pass: 'Prioritize unclear APIs, missing README/JSDoc/comments, onboarding gaps, and maintenance documentation.'
+}
 
 function createModel(modelId) {
     return genAI.getGenerativeModel({
@@ -68,23 +97,10 @@ function createModel(modelId) {
     });
 }
 
-async function generateReview({ files, depth, model, sourceType }) {
+async function generateReview({ files, depth, model, sourceType, options = {} }) {
     const reviewDepth = allowedDepths.has(depth) ? depth : 'standard';
-    const formattedFiles = files.map(file => `
-File: ${file.path}
-\`\`\`
-${file.content}
-\`\`\`
-`).join('\n')
-
-    const prompt = `
-Source type: ${sourceType}
-Review depth: ${reviewDepth}
-Depth behavior: ${depthInstructions[reviewDepth]}
-
-Files:
-${formattedFiles}
-`;
+    const normalizedOptions = normalizeOptions(options)
+    const prompt = buildPrompt({ files, reviewDepth, sourceType, options: normalizedOptions })
 
     const modelIds = getModelFallbackOrder(model)
     const failures = []
@@ -95,6 +111,7 @@ ${formattedFiles}
                 const result = await createModel(modelId).generateContent(prompt);
                 return {
                     ...parseStructuredReview(result.response.text(), files),
+                    options: normalizedOptions,
                     model: modelId,
                     fallbackUsed: modelId !== model
                 }
@@ -113,6 +130,133 @@ ${formattedFiles}
     }
 
     throw createProviderError(failures[failures.length - 1], failures)
+}
+
+async function generateReviewStream({ files, depth, model, sourceType, options = {}, onChunk }) {
+    const reviewDepth = allowedDepths.has(depth) ? depth : 'standard'
+    const normalizedOptions = normalizeOptions(options)
+    const prompt = buildPrompt({ files, reviewDepth, sourceType, options: normalizedOptions })
+    const modelIds = getModelFallbackOrder(model)
+    const failures = []
+
+    for (const modelId of modelIds) {
+        try {
+            const result = await createModel(modelId).generateContentStream(prompt)
+            let rawText = ''
+
+            for await (const chunk of result.stream) {
+                const text = chunk.text()
+                rawText += text
+                if (text && onChunk) onChunk(text)
+            }
+
+            return {
+                ...parseStructuredReview(rawText, files),
+                options: normalizedOptions,
+                model: modelId,
+                fallbackUsed: modelId !== model
+            }
+        } catch (error) {
+            failures.push({ model: modelId, status: error.status, message: error.message })
+            if (!isTransientProviderError(error)) throw createProviderError(error, failures)
+        }
+    }
+
+    throw createProviderError(failures[failures.length - 1], failures)
+}
+
+function buildPrompt({ files, reviewDepth, sourceType, options }) {
+    const formattedFiles = files.map(file => `
+File: ${file.path}
+Detected language: ${detectLanguage(file)}
+\`\`\`
+${file.content}
+\`\`\`
+`).join('\n')
+
+    const prompt = `
+Source type: ${sourceType}
+Review depth: ${reviewDepth}
+Depth behavior: ${depthInstructions[reviewDepth]}
+Explanation level: ${options.explanationLevel}
+Review focus areas: ${options.focusAreas.join(', ') || 'balanced'}
+Prompt template: ${options.promptTemplate}
+Template behavior: ${templateInstructions[options.promptTemplate] || templateInstructions.balanced}
+Generate unit tests: ${options.generateTests ? 'yes' : 'no'}
+Generate documentation: ${options.generateDocumentation ? 'yes' : 'no'}
+Streaming response requested: ${options.streamResponse ? 'yes' : 'no'}
+Detect code smells: ${options.detectCodeSmells ? 'yes' : 'no'}
+Detect security vulnerabilities: ${options.detectSecurityVulnerabilities ? 'yes' : 'no'}
+
+Custom review rules:
+${options.customRules || 'None'}
+
+Organization coding standards:
+${options.organizationStandards || 'None'}
+
+When source type is compare_versions, compare old and new files with matching paths. Emphasize regressions, improvements, and whether the new version should ship.
+
+Files:
+${formattedFiles}
+`;
+
+    return prompt
+}
+
+
+function normalizeOptions(options = {}) {
+    const focusAreas = Array.isArray(options.focusAreas)
+        ? options.focusAreas.filter(area => allowedFocusAreas.has(area))
+        : []
+
+    const explanationLevel = allowedExplanationLevels.has(options.explanationLevel) ? options.explanationLevel : 'intermediate'
+    const promptTemplate = templateInstructions[options.promptTemplate] ? options.promptTemplate : 'balanced'
+
+    return {
+        focusAreas,
+        explanationLevel,
+        customRules: String(options.customRules || '').slice(0, 3000),
+        organizationStandards: String(options.organizationStandards || '').slice(0, 3000),
+        promptTemplate,
+        generateTests: Boolean(options.generateTests),
+        generateDocumentation: Boolean(options.generateDocumentation),
+        streamResponse: options.streamResponse !== false,
+        detectCodeSmells: options.detectCodeSmells !== false,
+        detectSecurityVulnerabilities: options.detectSecurityVulnerabilities !== false
+    }
+}
+
+function detectLanguage(file) {
+    const path = String(file.path || '').toLowerCase()
+    const content = String(file.content || '')
+    const extensionMap = [
+        [/\.tsx?$/, 'TypeScript'],
+        [/\.jsx?$/, 'JavaScript'],
+        [/\.py$/, 'Python'],
+        [/\.(java)$/, 'Java'],
+        [/\.(cs)$/, 'C#'],
+        [/\.(cpp|cc|cxx|hpp|h)$/, 'C++'],
+        [/\.c$/, 'C'],
+        [/\.go$/, 'Go'],
+        [/\.rs$/, 'Rust'],
+        [/\.php$/, 'PHP'],
+        [/\.(rb)$/, 'Ruby'],
+        [/\.(swift)$/, 'Swift'],
+        [/\.(kt|kts)$/, 'Kotlin'],
+        [/\.(sql)$/, 'SQL'],
+        [/\.(html)$/, 'HTML'],
+        [/\.(css|scss)$/, 'CSS'],
+        [/\.(json)$/, 'JSON'],
+        [/\.(md|mdx)$/, 'Markdown']
+    ]
+
+    const matched = extensionMap.find(([pattern]) => pattern.test(path))
+    if (matched) return matched[1]
+    if (/function\s+\w+|const\s+\w+|=>|console\.log/.test(content)) return 'JavaScript'
+    if (/def\s+\w+\(|import\s+\w+|print\(/.test(content)) return 'Python'
+    if (/#include\s*<|std::|int\s+main\s*\(/.test(content)) return 'C++'
+    if (/public\s+class|System\.out\.println/.test(content)) return 'Java'
+    return 'Unknown'
 }
 
 function getModelFallbackOrder(modelId) {
@@ -335,7 +479,53 @@ function normalizeReview(review, files = []) {
         fixes,
         fixedFiles,
         fixedCode: String(review.fixedCode || ''),
+        detectedLanguages: Array.isArray(review.detectedLanguages) && review.detectedLanguages.length
+            ? review.detectedLanguages.map(String)
+            : [...new Set(files.map(detectLanguage))],
+        codeSmells: normalizeCodeSmells(review.codeSmells),
+        securityVulnerabilities: normalizeSecurityVulnerabilities(review.securityVulnerabilities),
+        generatedTests: normalizeGeneratedFiles(review.generatedTests),
+        generatedDocumentation: normalizeGeneratedFiles(review.generatedDocumentation),
+        comparison: normalizeComparison(review.comparison),
         markdown: String(review.markdown || createMarkdownReview(review, comments, checklist))
+    }
+}
+
+function normalizeCodeSmells(items) {
+    return Array.isArray(items) ? items.map(item => ({
+        file: String(item.file || 'pasted-code'),
+        line: Number(item.line) || 1,
+        title: String(item.title || 'Code smell'),
+        impact: String(item.impact || ''),
+        fix: String(item.fix || '')
+    })) : []
+}
+
+function normalizeSecurityVulnerabilities(items) {
+    return Array.isArray(items) ? items.map(item => ({
+        file: String(item.file || 'pasted-code'),
+        line: Number(item.line) || 1,
+        severity: normalizeSeverity(item.severity),
+        title: String(item.title || 'Security issue'),
+        risk: String(item.risk || ''),
+        mitigation: String(item.mitigation || '')
+    })) : []
+}
+
+function normalizeGeneratedFiles(items) {
+    return Array.isArray(items) ? items.map(item => ({
+        file: String(item.file || 'generated.txt'),
+        framework: item.framework ? String(item.framework) : '',
+        content: String(item.content || '')
+    })).filter(item => item.content.trim()) : []
+}
+
+function normalizeComparison(comparison = {}) {
+    return {
+        summary: String(comparison.summary || ''),
+        regressions: Array.isArray(comparison.regressions) ? comparison.regressions.map(String) : [],
+        improvements: Array.isArray(comparison.improvements) ? comparison.improvements.map(String) : [],
+        recommendation: ['ship', 'revise', 'block'].includes(comparison.recommendation) ? comparison.recommendation : ''
     }
 }
 
@@ -371,5 +561,7 @@ function createMarkdownReview(review, comments, checklist) {
 function normalizeSeverity(severity) {
     return ['critical', 'high', 'medium', 'low'].includes(severity) ? severity : 'medium'
 }
+
+generateReview.stream = generateReviewStream
 
 module.exports = generateReview
