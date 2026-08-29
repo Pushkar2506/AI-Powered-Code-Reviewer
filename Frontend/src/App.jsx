@@ -63,6 +63,49 @@ const initialAdminFilters = {
   sort: 'newest',
 }
 
+const initialHistoryFilters = {
+  search: '',
+  model: '',
+  projectId: '',
+  severity: '',
+  dateFrom: '',
+  dateTo: '',
+  favorite: false,
+}
+
+const pagePaths = {
+  dashboard: '/dashboard',
+  admin: '/admin',
+  review: '/review',
+  history: '/history',
+  team: '/team',
+  profile: '/profile',
+  settings: '/settings',
+}
+
+const publicPaths = {
+  landing: '/',
+  login: '/login',
+  register: '/signup',
+  forgot: '/forgot-password',
+  reset: '/reset-password',
+  verify: '/verify-email',
+}
+
+function getPageFromPath(pathname, role) {
+  const path = pathname.replace(/\/$/, '') || '/'
+  const page = Object.entries(pagePaths).find(([, value]) => value === path)?.[0]
+  if (!page) return ''
+  if (page === 'admin' && role !== 'admin') return 'dashboard'
+  if (page === 'dashboard' && role === 'admin') return 'admin'
+  return page
+}
+
+function getPublicViewFromPath(pathname) {
+  const path = pathname.replace(/\/$/, '') || '/'
+  return Object.entries(publicPaths).find(([, value]) => value === path)?.[0] || 'landing'
+}
+
 const starterCode = `function calculateDiscount(price, percentage) {
   if (!price || !percentage) return 0
   return price - price * percentage / 100
@@ -99,6 +142,15 @@ function formatCurrency(value) {
     currency: 'USD',
     maximumFractionDigits: 2,
   }).format(Number(value || 0))
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
 }
 
 function hydrateReviewResult(result, reviewText, files = []) {
@@ -232,11 +284,13 @@ function App() {
     return window.localStorage.getItem(TOKEN_KEY) || ''
   })
   const [theme, setTheme] = useState(() => window.localStorage.getItem(THEME_KEY) || window.localStorage.getItem(LEGACY_THEME_KEY) || 'dark')
-  const [publicView, setPublicView] = useState('landing')
-  const [activePage, setActivePage] = useState('dashboard')
+  const [publicView, setPublicViewState] = useState(() => token ? getPublicViewFromPath(window.location.pathname) : (getPageFromPath(window.location.pathname) ? 'login' : getPublicViewFromPath(window.location.pathname)))
+  const [activePage, setActivePageState] = useState(() => getPageFromPath(window.location.pathname) || 'dashboard')
   const [user, setUser] = useState(null)
   const [usage, setUsage] = useState({ used: 0, limit: 0, remaining: 0 })
   const [reviews, setReviews] = useState([])
+  const [historyFilters, setHistoryFilters] = useState(initialHistoryFilters)
+  const [sharedReview, setSharedReview] = useState(null)
   const [projects, setProjects] = useState([])
   const [workspaces, setWorkspaces] = useState([])
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState('')
@@ -285,6 +339,28 @@ function App() {
   const [workspaceForm, setWorkspaceForm] = useState({ name: '', inviteEmail: '', inviteRole: 'member', inviteToken: '' })
   const sourceModeRef = useRef(sourceMode)
 
+  const setPublicView = useCallback((view, options = {}) => {
+    setPublicViewState(view)
+    const path = publicPaths[view] || '/'
+    if (!options.replace && window.location.pathname !== path) {
+      window.history.pushState({}, '', path)
+    }
+    if (options.replace) {
+      window.history.replaceState({}, '', path)
+    }
+  }, [])
+
+  const setActivePage = useCallback((page, options = {}) => {
+    setActivePageState(page)
+    const path = pagePaths[page] || '/dashboard'
+    if (!options.replace && window.location.pathname !== path) {
+      window.history.pushState({}, '', path)
+    }
+    if (options.replace) {
+      window.history.replaceState({}, '', path)
+    }
+  }, [])
+
   const api = useMemo(() => {
     const client = axios.create({ baseURL: API_URL })
     client.interceptors.request.use(config => {
@@ -315,10 +391,25 @@ function App() {
     sourceModeRef.current = sourceMode
   }, [sourceMode])
 
+  useEffect(() => {
+    function handlePopState() {
+      if (token && user) {
+        setActivePageState(getPageFromPath(window.location.pathname, user.role) || (user.role === 'admin' ? 'admin' : 'dashboard'))
+      } else {
+        setPublicViewState(getPublicViewFromPath(window.location.pathname))
+      }
+    }
+
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [token, user])
+
   const resetSessionState = useCallback(() => {
     setUser(null)
     setUsage({ used: 0, limit: 0, remaining: 0 })
     setReviews([])
+    setHistoryFilters(initialHistoryFilters)
+    setSharedReview(null)
     setProjects([])
     setWorkspaces([])
     setSelectedWorkspaceId('')
@@ -334,9 +425,9 @@ function App() {
     setReviewLoadingSource('')
     setError('')
     setNotice('')
-    setPublicView('landing')
-    setActivePage('dashboard')
-  }, [])
+    setPublicView('landing', { replace: true })
+    setActivePage('dashboard', { replace: true })
+  }, [setActivePage, setPublicView])
 
   const signOut = useCallback(() => {
     window.localStorage.removeItem(TOKEN_KEY)
@@ -362,18 +453,33 @@ function App() {
     setAdminUsers(usersResponse.data.users)
   }, [api, adminFilters])
 
+  const loadReviews = useCallback(async (filters = initialHistoryFilters) => {
+    const response = await api.get('/reviews', {
+      params: {
+        search: filters.search || undefined,
+        model: filters.model || undefined,
+        projectId: filters.projectId || undefined,
+        severity: filters.severity || undefined,
+        dateFrom: filters.dateFrom || undefined,
+        dateTo: filters.dateTo || undefined,
+        favorite: filters.favorite ? 'true' : undefined,
+      }
+    })
+    setReviews(response.data.reviews)
+    return response.data.reviews
+  }, [api])
+
   const loadAppData = useCallback(async () => {
     try {
-      const [profileResponse, reviewsResponse, modelsResponse, projectsResponse] = await Promise.all([
+      const [profileResponse, modelsResponse, projectsResponse] = await Promise.all([
         api.get('/auth/me'),
-        api.get('/reviews'),
         api.get('/ai/models'),
         api.get('/projects'),
       ])
       setUser(profileResponse.data.user)
       setUsage(profileResponse.data.usage)
-      setReviews(reviewsResponse.data.reviews)
       setProjects(projectsResponse.data.projects)
+      await loadReviews()
       setWorkspaces(profileResponse.data.workspaces || [])
       setSelectedWorkspaceId(current => current || String(profileResponse.data.workspaces?.[0]?.id || ''))
       setProfileForm({
@@ -394,14 +500,16 @@ function App() {
 
       if (profileResponse.data.user.role === 'admin') {
         await loadAdminData()
-        setActivePage(current => current === 'dashboard' ? 'admin' : current)
+        const routePage = getPageFromPath(window.location.pathname, 'admin')
+        setActivePage(routePage || 'admin', { replace: true })
       } else {
-        setActivePage(current => current === 'admin' ? 'dashboard' : current)
+        const routePage = getPageFromPath(window.location.pathname, 'user')
+        setActivePage(routePage || 'dashboard', { replace: true })
       }
     } catch {
       signOut()
     }
-  }, [api, loadAdminData, signOut])
+  }, [api, loadAdminData, loadReviews, setActivePage, signOut])
 
   const verifyEmailToken = useCallback(async (verificationToken) => {
     try {
@@ -415,7 +523,7 @@ function App() {
       setError(error.response?.data?.error || 'Unable to verify email.')
       setSecurityForm(current => ({ ...current, verifyToken: '' }))
     }
-  }, [api, loadAppData, token, user])
+  }, [api, loadAppData, setPublicView, token, user])
 
   useEffect(() => {
     if (!token) return
@@ -429,8 +537,9 @@ function App() {
     const resetToken = params.get('resetToken')
     const verifyToken = params.get('verifyToken')
     const inviteToken = params.get('inviteToken')
+    const shareToken = params.get('share')
 
-    if (!oauthToken && !oauthError && !resetToken && !verifyToken && !inviteToken) return
+    if (!oauthToken && !oauthError && !resetToken && !verifyToken && !inviteToken && !shareToken) return
 
     if (oauthToken) {
       window.localStorage.setItem(TOKEN_KEY, oauthToken)
@@ -449,9 +558,17 @@ function App() {
       setPendingInviteToken(inviteToken)
       if (!token) setPublicView('login')
     }
+    if (shareToken) {
+      api.get(`/reviews/shared/${shareToken}`)
+        .then(response => {
+          setSharedReview(response.data.review)
+          setPublicView('shared')
+        })
+        .catch(() => setError('Shared report was not found.'))
+    }
 
     window.history.replaceState({}, document.title, window.location.pathname)
-  }, [token, verifyEmailToken])
+  }, [api, setPublicView, token, verifyEmailToken])
 
   async function handleAuth(event) {
     event.preventDefault()
@@ -823,6 +940,112 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  async function updateHistoryFilters(nextFilters) {
+    setHistoryFilters(nextFilters)
+    await loadReviews(nextFilters)
+  }
+
+  function replaceReviewInState(updatedReview) {
+    setReviews(current => current.map(item => item.id === updatedReview.id ? updatedReview : item))
+  }
+
+  async function toggleReviewFavorite(item) {
+    try {
+      const response = await api.patch(`/reviews/${item.id}/favorite`, { isFavorite: !item.isFavorite })
+      replaceReviewInState(response.data.review)
+      setNotice(response.data.review.isFavorite ? 'Review pinned.' : 'Review unpinned.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to update pinned review.')
+    }
+  }
+
+  async function saveReviewNotes(item, notes) {
+    try {
+      const response = await api.patch(`/reviews/${item.id}/notes`, { notes })
+      replaceReviewInState(response.data.review)
+      setNotice('Review notes saved.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to save notes.')
+    }
+  }
+
+  async function deleteReviewRecord(item) {
+    const confirmed = window.confirm('Delete this review record? This removes it from your history.')
+    if (!confirmed) return
+
+    try {
+      await api.delete(`/reviews/${item.id}`)
+      setReviews(current => current.filter(reviewItem => reviewItem.id !== item.id))
+      setNotice('Review deleted.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to delete review.')
+    }
+  }
+
+  async function shareReviewReport(item) {
+    try {
+      const response = await api.post(`/reviews/${item.id}/share`)
+      await navigator.clipboard.writeText(response.data.shareUrl)
+      replaceReviewInState(response.data.review)
+      setNotice('Share link copied.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to create share link.')
+    }
+  }
+
+  async function exportReviewMarkdown(item) {
+    try {
+      const response = await api.get(`/reviews/${item.id}/export.md`, { responseType: 'blob' })
+      const url = URL.createObjectURL(new Blob([response.data], { type: 'text/markdown' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `review-${item.id}.md`
+      link.click()
+      URL.revokeObjectURL(url)
+      setNotice('Markdown report exported.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to export Markdown.')
+    }
+  }
+
+  function exportReviewPdf(item) {
+    const popup = window.open('', '_blank', 'width=900,height=720')
+    if (!popup) {
+      setError('Popup blocked. Allow popups to export PDF.')
+      return
+    }
+
+    popup.document.write(`
+      <html>
+        <head>
+          <title>Review ${item.id}</title>
+          <style>
+            body { font-family: Arial, sans-serif; color: #172033; padding: 32px; line-height: 1.55; }
+            h1 { margin: 0 0 8px; }
+            .meta { color: #596579; margin-bottom: 24px; }
+            pre { white-space: pre-wrap; background: #f3f6fb; border: 1px solid #dbe3ee; padding: 16px; border-radius: 8px; }
+          </style>
+        </head>
+        <body>
+          <h1>${escapeHtml(item.projectName || 'Code Review Report')}</h1>
+          <div class="meta">Score ${item.score || 0}/100 - ${escapeHtml(item.model)} - ${escapeHtml(item.depth)} - ${escapeHtml(formatDate(item.createdAt))}</div>
+          ${item.notes ? `<h2>Notes</h2><p>${escapeHtml(item.notes)}</p>` : ''}
+          <h2>Report</h2>
+          <pre>${escapeHtml(item.review)}</pre>
+        </body>
+      </html>
+    `)
+    popup.document.close()
+    popup.focus()
+    popup.print()
+    setNotice('PDF export opened.')
+  }
+
+  function restoreReviewedCode(item) {
+    loadReview(item)
+    setNotice('Reviewed code restored to editor.')
+  }
+
   function loadReview(item) {
     const result = hydrateReviewResult({
       summary: '',
@@ -850,6 +1073,12 @@ function App() {
     }
     if (item.sourceType === 'pull_request') {
       setPullRequestUrl(item.sourceUrl || '')
+    }
+    if (item.sourceType === 'compare_versions') {
+      const beforeFile = item.files?.find(file => file.status === 'before') || item.files?.[0]
+      const afterFile = item.files?.find(file => file.status === 'after') || item.files?.[1]
+      setBeforeCode(beforeFile?.content || '')
+      setAfterCode(afterFile?.content || '')
     }
     setSelectedProjectId(item.projectId ? String(item.projectId) : '')
     setError('')
@@ -900,6 +1129,15 @@ function App() {
     setResultView('report')
   }
 
+  if (publicView === 'shared') {
+    return (
+      <>
+        <FlashMessage notice={notice} error={error} />
+        <PublicExperience publicView={publicView} setPublicView={setPublicView} sharedReview={sharedReview} theme={theme} setTheme={setTheme} />
+      </>
+    )
+  }
+
   if (!token || !user) {
     return (
       <>
@@ -915,6 +1153,7 @@ function App() {
           requestPasswordReset={requestPasswordReset}
           resetPassword={resetPassword}
           verifyEmail={verifyEmail}
+          sharedReview={sharedReview}
           isLoading={isLoading}
           error={error}
           theme={theme}
@@ -981,7 +1220,23 @@ function App() {
         downloadReview={downloadReview}
       />
     ),
-    history: <HistoryPage reviews={reviews} loadReview={loadReview} />,
+    history: (
+      <HistoryPage
+        reviews={reviews}
+        projects={projects}
+        models={models}
+        filters={historyFilters}
+        setFilters={updateHistoryFilters}
+        loadReview={loadReview}
+        toggleReviewFavorite={toggleReviewFavorite}
+        saveReviewNotes={saveReviewNotes}
+        deleteReviewRecord={deleteReviewRecord}
+        shareReviewReport={shareReviewReport}
+        exportReviewMarkdown={exportReviewMarkdown}
+        exportReviewPdf={exportReviewPdf}
+        restoreReviewedCode={restoreReviewedCode}
+      />
+    ),
     team: (
       <TeamPage
         workspaces={workspaces}
@@ -1066,6 +1321,10 @@ function App() {
 }
 
 function PublicExperience(props) {
+  if (props.publicView === 'shared') {
+    return <SharedReportPage review={props.sharedReview} setPublicView={props.setPublicView} />
+  }
+
   if (props.publicView === 'login' || props.publicView === 'register') {
     return <AuthPage {...props} mode={props.publicView} />
   }
@@ -1144,6 +1403,33 @@ function LandingPage({ setPublicView, theme, setTheme }) {
       </section>
 
       <footer className="marketing-footer"><span>{APP_NAME}</span><span>AI-powered code review for modern teams.</span></footer>
+    </main>
+  )
+}
+
+function SharedReportPage({ review, setPublicView }) {
+  if (!review) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-panel">
+          <button type="button" className="back-button" onClick={() => setPublicView('landing')}>Back</button>
+          <EmptyState title="Loading shared report" text="The report will appear here when the share link is valid." />
+        </section>
+      </main>
+    )
+  }
+
+  return (
+    <main className="marketing-shell shared-report-shell">
+      <header className="marketing-header">
+        <div className="brand"><div className="brand-mark" aria-hidden="true">AI</div><div><strong>{APP_NAME}</strong><span>Shared review report</span></div></div>
+        <div className="marketing-actions"><button type="button" className="ghost-button" onClick={() => setPublicView('login')}>Sign In</button></div>
+      </header>
+      <section className="shared-report">
+        <PageTitle eyebrow="Shared Report" title={review.projectName || 'Code Review Report'} />
+        <div className="result-summary"><div className="score-card"><strong>{review.score || '-'}</strong><span>Review score</span></div><SeverityBadge label="Critical" value={countSeverities(review.comments || []).critical} tone="critical" /><SeverityBadge label="High" value={countSeverities(review.comments || []).high} tone="high" /><SeverityBadge label="Medium" value={countSeverities(review.comments || []).medium} tone="medium" /><SeverityBadge label="Low" value={countSeverities(review.comments || []).low} tone="low" /></div>
+        <section className="wide-panel"><Markdown rehypePlugins={[rehypeHighlight]}>{review.review}</Markdown></section>
+      </section>
     </main>
   )
 }
@@ -1438,8 +1724,72 @@ function DiffEmptyState({ score, fixes }) {
   return <EmptyState title="No fixed code generated" text={score >= 90 ? 'The review score is high, so the model did not generate a replacement for this file.' : 'The model returned findings but no full replacement code for this file. Use Comments for exact issues, or run a Deep review for stronger fix generation.'} />
 }
 
-function HistoryPage({ reviews, loadReview }) {
-  return <div className="page-stack"><PageTitle eyebrow="Reports" title="Review history" /><section className="wide-panel">{reviews.length ? <div className="history-list">{reviews.map(item => <HistoryRow key={item.id} item={item} onClick={() => loadReview(item)} />)}</div> : <EmptyState title="No saved reports" text="Completed reviews will appear here automatically." />}</section></div>
+function HistoryPage({ reviews, projects, models, filters, setFilters, loadReview, toggleReviewFavorite, saveReviewNotes, deleteReviewRecord, shareReviewReport, exportReviewMarkdown, exportReviewPdf, restoreReviewedCode }) {
+  function patchFilters(changes) {
+    setFilters({ ...filters, ...changes })
+  }
+
+  return (
+    <div className="page-stack">
+      <PageTitle eyebrow="Reports" title="Review history" />
+      <section className="history-filter-panel">
+        <label><span>Search</span><input value={filters.search} onChange={event => patchFilters({ search: event.target.value })} placeholder="Search report, code, notes, project" /></label>
+        <label><span>Model</span><select value={filters.model} onChange={event => patchFilters({ model: event.target.value })}><option value="">All models</option>{models.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}</select></label>
+        <label><span>Project</span><select value={filters.projectId} onChange={event => patchFilters({ projectId: event.target.value })}><option value="">All projects</option>{projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        <label><span>Severity</span><select value={filters.severity} onChange={event => patchFilters({ severity: event.target.value })}><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select></label>
+        <label><span>From</span><input type="date" value={filters.dateFrom} onChange={event => patchFilters({ dateFrom: event.target.value })} /></label>
+        <label><span>To</span><input type="date" value={filters.dateTo} onChange={event => patchFilters({ dateTo: event.target.value })} /></label>
+        <label className="inline-check"><input type="checkbox" checked={filters.favorite} onChange={event => patchFilters({ favorite: event.target.checked })} /> Pinned only</label>
+      </section>
+      <section className="history-report-grid">
+        {reviews.length ? reviews.map(item => (
+          <ReportCard
+            key={item.id}
+            item={item}
+            loadReview={loadReview}
+            toggleReviewFavorite={toggleReviewFavorite}
+            saveReviewNotes={saveReviewNotes}
+            deleteReviewRecord={deleteReviewRecord}
+            shareReviewReport={shareReviewReport}
+            exportReviewMarkdown={exportReviewMarkdown}
+            exportReviewPdf={exportReviewPdf}
+            restoreReviewedCode={restoreReviewedCode}
+          />
+        )) : <EmptyState title="No saved reports" text="Completed reviews that match your filters will appear here." />}
+      </section>
+    </div>
+  )
+}
+
+function ReportCard({ item, loadReview, toggleReviewFavorite, saveReviewNotes, deleteReviewRecord, shareReviewReport, exportReviewMarkdown, exportReviewPdf, restoreReviewedCode }) {
+  const [notes, setNotes] = useState(item.notes || '')
+  const severityCounts = countSeverities(item.comments || [])
+
+  useEffect(() => setNotes(item.notes || ''), [item.notes])
+
+  return (
+    <article className={item.isFavorite ? 'report-card pinned' : 'report-card'}>
+      <header>
+        <div>
+          <strong>{item.projectName || item.sourceType || 'Review report'}</strong>
+          <small>{formatDate(item.createdAt)} - {item.model} - Score {item.score || 0}</small>
+        </div>
+        <button type="button" className="pin-button" onClick={() => toggleReviewFavorite(item)}>{item.isFavorite ? 'Pinned' : 'Pin'}</button>
+      </header>
+      <div className="report-badges"><span>Critical {severityCounts.critical}</span><span>High {severityCounts.high}</span><span>Medium {severityCounts.medium}</span><span>Low {severityCounts.low}</span></div>
+      <p>{item.review.slice(0, 260)}</p>
+      <label><span>Notes</span><textarea value={notes} onChange={event => setNotes(event.target.value)} placeholder="Add private notes for this review." /></label>
+      <div className="report-actions">
+        <button type="button" className="ghost-button" onClick={() => loadReview(item)}>Open</button>
+        <button type="button" className="ghost-button" onClick={() => restoreReviewedCode(item)}>Restore Code</button>
+        <button type="button" className="ghost-button" onClick={() => saveReviewNotes(item, notes)}>Save Notes</button>
+        <button type="button" className="ghost-button" onClick={() => shareReviewReport(item)}>Share</button>
+        <button type="button" className="ghost-button" onClick={() => exportReviewMarkdown(item)}>Markdown</button>
+        <button type="button" className="ghost-button" onClick={() => exportReviewPdf(item)}>PDF</button>
+        <button type="button" className="ghost-button danger-button" onClick={() => deleteReviewRecord(item)}>Delete</button>
+      </div>
+    </article>
+  )
 }
 
 function AdminPage({

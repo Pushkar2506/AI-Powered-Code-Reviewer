@@ -185,6 +185,10 @@ async function initDatabase() {
             comments JSONB NOT NULL DEFAULT '[]'::jsonb,
             files JSONB NOT NULL DEFAULT '[]'::jsonb,
             ai_options JSONB NOT NULL DEFAULT '{}'::jsonb,
+            is_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+            notes TEXT,
+            share_token VARCHAR(80) UNIQUE,
+            deleted_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
     `)
@@ -198,6 +202,10 @@ async function initDatabase() {
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS comments JSONB NOT NULL DEFAULT '[]'::jsonb;`)
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS files JSONB NOT NULL DEFAULT '[]'::jsonb;`)
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS ai_options JSONB NOT NULL DEFAULT '{}'::jsonb;`)
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN NOT NULL DEFAULT FALSE;`)
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS notes TEXT;`)
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE;`)
+    await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`)
 }
 
 module.exports = {

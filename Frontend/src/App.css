@@ -1258,6 +1258,142 @@ button:focus-visible {
   gap: 10px;
 }
 
+.history-filter-panel {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.2fr) repeat(5, minmax(140px, 0.55fr)) auto;
+  align-items: end;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+
+.history-filter-panel select {
+  min-width: 0;
+  width: 100%;
+}
+
+.inline-check {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 0 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.inline-check input {
+  min-height: auto;
+}
+
+.history-report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.report-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 18px;
+  box-shadow: var(--shadow);
+}
+
+.report-card.pinned {
+  border-color: color-mix(in srgb, var(--primary) 46%, var(--line));
+}
+
+.report-card header,
+.report-actions,
+.report-badges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.report-card header {
+  justify-content: space-between;
+}
+
+.report-card strong,
+.report-card small {
+  display: block;
+}
+
+.report-card small,
+.report-card p {
+  color: var(--muted);
+}
+
+.report-card p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.report-card textarea {
+  min-height: 92px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 12px;
+  resize: vertical;
+}
+
+.report-badges span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.pin-button {
+  min-height: 34px;
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--text);
+  padding: 0 12px;
+  font-weight: 900;
+}
+
+.report-actions {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.report-actions .ghost-button {
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 0.78rem;
+}
+
+.danger-button {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--line));
+  color: var(--danger);
+}
+
+.shared-report {
+  display: grid;
+  width: min(1120px, calc(100% - 48px));
+  gap: 18px;
+  margin: 0 auto;
+  padding: 42px 0;
+}
+
 .history-row {
   display: grid;
   width: 100%;
@@ -1617,6 +1753,10 @@ button:focus-visible {
   .toolbar .primary-button,
   .auth-oauth,
   .admin-filter-bar,
+  .history-filter-panel,
+  .history-filter-panel label,
+  .history-filter-panel input,
+  .history-filter-panel select,
   .admin-filter-bar label,
   .admin-filter-bar input,
   .admin-filter-bar select,
@@ -1624,8 +1764,14 @@ button:focus-visible {
   .project-create,
   .source-tabs,
   .result-actions,
+  .report-actions,
   .result-actions button {
     width: 100%;
+  }
+
+  .history-report-grid,
+  .report-actions {
+    grid-template-columns: 1fr;
   }
 
   .bar-chart {
