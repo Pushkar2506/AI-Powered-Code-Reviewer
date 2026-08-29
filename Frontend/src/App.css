@@ -908,6 +908,32 @@ button:focus-visible {
   white-space: pre-wrap;
 }
 
+.fix-list {
+  display: grid;
+  gap: 10px;
+}
+
+.fix-list article {
+  display: grid;
+  gap: 8px;
+  min-height: 120px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 14px;
+}
+
+.fix-list p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.fix-list pre {
+  min-height: 120px;
+  margin: 0;
+}
+
 .review-content h2,
 .review-content h3 {
   margin: 1.35rem 0 0.6rem;

@@ -80,6 +80,7 @@ module.exports.getReview = async (req, res) => {
                     path: file.path,
                     content: file.content,
                     fixedContent: fixedFile?.content || null,
+                    fixes: structuredReview.fixes?.filter(item => item.file === file.path) || [],
                     status: file.status,
                     additions: file.additions,
                     deletions: file.deletions

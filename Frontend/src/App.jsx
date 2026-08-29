@@ -51,6 +51,7 @@ const emptyResult = {
   severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
   checklist: [],
   comments: [],
+  fixes: [],
   files: [],
   fixedFiles: [],
   fixedCode: '',
@@ -70,6 +71,131 @@ function formatCurrency(value) {
     currency: 'USD',
     maximumFractionDigits: 2,
   }).format(Number(value || 0))
+}
+
+function hydrateReviewResult(result, reviewText, files = []) {
+  const parsed = parseReviewJson(reviewText)
+  const hasStructuredTabs = result?.comments?.length || result?.checklist?.length || result?.fixedFiles?.length || result?.fixedCode
+  const source = parsed && !hasStructuredTabs ? parsed : result || emptyResult
+  const fixedFiles = source.fixedFiles?.length
+    ? source.fixedFiles
+    : files.filter(file => file.fixedContent).map(file => ({ path: file.path, content: file.fixedContent }))
+  const fileFixes = files.flatMap(file => (file.fixes || []).map(fix => ({ ...fix, file: fix.file || file.path })))
+
+  return {
+    ...emptyResult,
+    ...source,
+    files,
+    fixes: source.fixes?.length ? source.fixes : fileFixes,
+    fixedFiles,
+    severityCounts: source.severityCounts || countSeverities(source.comments || []),
+    markdown: source.markdown || reviewText
+  }
+}
+
+function parseReviewJson(text) {
+  const cleaned = String(text || '')
+    .trim()
+    .replace(/^```json/i, '')
+    .replace(/^```/, '')
+    .replace(/```$/, '')
+    .trim()
+  const candidate = extractJsonObject(cleaned)
+  const strippedCandidate = removeProblematicCodeFields(candidate)
+  const attempts = [
+    cleaned,
+    candidate,
+    escapeControlCharactersInsideStrings(candidate),
+    strippedCandidate,
+    escapeControlCharactersInsideStrings(strippedCandidate)
+  ].filter(Boolean)
+
+  for (const attempt of attempts) {
+    try {
+      return JSON.parse(attempt)
+    } catch {
+      // Try the next cleanup strategy.
+    }
+  }
+
+  return null
+}
+
+function removeProblematicCodeFields(text) {
+  const source = String(text || '')
+  const fixedFilesIndex = source.indexOf('"fixedFiles"')
+  const fixedCodeIndex = source.indexOf('"fixedCode"', fixedFilesIndex)
+
+  if (fixedFilesIndex === -1 || fixedCodeIndex === -1) return ''
+
+  return `${source.slice(0, fixedFilesIndex)}"fixedFiles": [], ${source.slice(fixedCodeIndex)}`
+}
+
+function extractJsonObject(text) {
+  const start = text.indexOf('{')
+  if (start === -1) return ''
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"') {
+      inString = !inString
+      continue
+    }
+    if (inString) continue
+    if (char === '{') depth += 1
+    if (char === '}') depth -= 1
+    if (depth === 0) return text.slice(start, index + 1)
+  }
+
+  return text.slice(start)
+}
+
+function escapeControlCharactersInsideStrings(text) {
+  let repaired = ''
+  let inString = false
+  let escaped = false
+
+  for (const char of String(text || '')) {
+    if (escaped) {
+      repaired += char
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      repaired += char
+      escaped = true
+      continue
+    }
+    if (char === '"') {
+      repaired += char
+      inString = !inString
+      continue
+    }
+    if (inString && char === '\n') {
+      repaired += '\\n'
+      continue
+    }
+    if (inString && char === '\r') continue
+    if (inString && char === '\t') {
+      repaired += '\\t'
+      continue
+    }
+    repaired += char
+  }
+
+  return repaired
 }
 
 function App() {
@@ -280,8 +406,9 @@ function App() {
       }
 
       const response = await api.post('/ai/get-review', payload)
-      setReview(response.data.review)
-      setResult({ ...(response.data.result || emptyResult), files: response.data.savedReview?.files || [] })
+      const result = hydrateReviewResult(response.data.result, response.data.review, response.data.savedReview?.files || [])
+      setReview(result.markdown || response.data.review)
+      setResult(result)
       setUsage(response.data.usage)
       setReviews(current => [response.data.savedReview, ...current.filter(item => item.id !== response.data.savedReview.id)])
       setResultView('report')
@@ -378,22 +505,18 @@ function App() {
   }
 
   function loadReview(item) {
-    setCode(item.code)
-    setFiles(item.files?.length ? item.files : [{ path: 'reviewed-code.js', content: item.code }])
-    setReview(item.review)
-      setResult({
+    const result = hydrateReviewResult({
       summary: '',
       score: item.score || 0,
       severityCounts: countSeverities(item.comments || []),
       checklist: item.checklist || [],
       comments: item.comments || [],
-      files: item.files || [],
-      fixedFiles: item.files?.filter(file => file.fixedContent).map(file => ({
-        path: file.path,
-        content: file.fixedContent
-      })) || [],
       fixedCode: item.fixedCode || ''
-    })
+    }, item.review, item.files || [])
+    setCode(item.code)
+    setFiles(item.files?.length ? item.files : [{ path: 'reviewed-code.js', content: item.code }])
+    setReview(result.markdown || item.review)
+    setResult(result)
     setDepth(item.depth)
     setModel(item.model)
     setSourceMode(item.sourceType || 'paste')
@@ -709,9 +832,9 @@ function ReviewResults({ review, result, resultView, setResultView, error, isLoa
           <ResultSummary result={result} />
           <div className="source-tabs compact-tabs">{['report', 'comments', 'checklist', 'diff'].map(view => <button key={view} type="button" className={resultView === view ? 'active' : ''} onClick={() => setResultView(view)}>{view}</button>)}</div>
           {resultView === 'report' && <Markdown rehypePlugins={[rehypeHighlight]}>{review}</Markdown>}
-          {resultView === 'comments' && <InlineComments comments={result.comments} />}
-          {resultView === 'checklist' && <Checklist checklist={result.checklist} />}
-          {resultView === 'diff' && <DiffView files={result.files} fixedFiles={result.fixedFiles} before={code} after={result.fixedCode} />}
+          {resultView === 'comments' && <InlineComments comments={result.comments} score={result.score} />}
+          {resultView === 'checklist' && <Checklist checklist={result.checklist} score={result.score} />}
+          {resultView === 'diff' && <DiffView files={result.files} fixedFiles={result.fixedFiles} fixes={result.fixes} before={code} after={result.fixedCode} score={result.score} />}
         </div>
       )}
     </div>
@@ -719,24 +842,25 @@ function ReviewResults({ review, result, resultView, setResultView, error, isLoa
 }
 
 function ResultSummary({ result }) {
-  return <div className="result-summary"><div className="score-card"><strong>{result.score || 0}</strong><span>Review score</span></div><SeverityBadge label="Critical" value={result.severityCounts?.critical || 0} tone="critical" /><SeverityBadge label="High" value={result.severityCounts?.high || 0} tone="high" /><SeverityBadge label="Medium" value={result.severityCounts?.medium || 0} tone="medium" /><SeverityBadge label="Low" value={result.severityCounts?.low || 0} tone="low" /></div>
+  const hasScore = Number(result.score) > 0
+  return <div className="result-summary"><div className="score-card"><strong>{hasScore ? result.score : '-'}</strong><span>{hasScore ? 'Review score' : 'Score unavailable'}</span></div><SeverityBadge label="Critical" value={result.severityCounts?.critical || 0} tone="critical" /><SeverityBadge label="High" value={result.severityCounts?.high || 0} tone="high" /><SeverityBadge label="Medium" value={result.severityCounts?.medium || 0} tone="medium" /><SeverityBadge label="Low" value={result.severityCounts?.low || 0} tone="low" /></div>
 }
 
 function SeverityBadge({ label, value, tone }) {
   return <div className={`severity-card ${tone}`}><strong>{value}</strong><span>{label}</span></div>
 }
 
-function InlineComments({ comments }) {
-  if (!comments?.length) return <EmptyState title="No inline comments" text="No line-level issues were returned for this review." />
+function InlineComments({ comments, score }) {
+  if (!comments?.length) return <EmptyState title="No inline comments returned" text={score >= 90 ? 'The review score is high, so the model did not find line-level issues worth flagging.' : 'The model returned a report but did not provide line-level comments. Try Standard or Deep review for more granular findings.'} />
   return <div className="comment-list">{comments.map((comment, index) => <article className="comment-card" key={`${comment.file}-${comment.line}-${index}`}><div><span className={`severity-pill ${comment.severity}`}>{comment.severity}</span><strong>{comment.file}:{comment.line} - {comment.title}</strong></div><p>{comment.message}</p><small>{comment.suggestion}</small></article>)}</div>
 }
 
-function Checklist({ checklist }) {
-  if (!checklist?.length) return <EmptyState title="No checklist" text="The model did not return checklist items for this review." />
+function Checklist({ checklist, score }) {
+  if (!checklist?.length) return <EmptyState title="Checklist unavailable" text={score ? `The model scored this review ${score}/100 but did not return checklist fields. Run the review again to regenerate structured checklist data.` : 'No score or checklist was returned by the model. The response was incomplete.'} />
   return <div className="checklist">{checklist.map((item, index) => <div className={`check-item ${item.status}`} key={`${item.label}-${index}`}><strong>{item.label}</strong><span>{item.status}</span><p>{item.note}</p></div>)}</div>
 }
 
-function DiffView({ files = [], fixedFiles = [], before, after }) {
+function DiffView({ files = [], fixedFiles = [], fixes = [], before, after, score }) {
   const diffFiles = files.length ? files : [{ path: 'pasted-code.js', content: before }]
   const initialPath = diffFiles[0]?.path || fixedFiles[0]?.path || 'pasted-code.js'
   const fileSignature = diffFiles.map(file => file.path).join('|')
@@ -744,6 +868,7 @@ function DiffView({ files = [], fixedFiles = [], before, after }) {
   const [activePath, setActivePath] = useState(initialPath)
   const activeFile = diffFiles.find(file => file.path === activePath) || diffFiles[0]
   const fixedFile = fixedFiles.find(file => file.path === activeFile.path)
+  const activeFixes = fixes.filter(fix => fix.file === activeFile.path)
   const fixedContent = fixedFile?.content || activeFile.fixedContent || after
 
   useEffect(() => {
@@ -763,10 +888,21 @@ function DiffView({ files = [], fixedFiles = [], before, after }) {
       )}
       <div className="diff-grid">
         <div><h3>Before</h3><pre>{activeFile.content}</pre></div>
-        <div><h3>After</h3><pre>{fixedContent || 'No fixed version was generated for this file.'}</pre></div>
+        <div>
+          <h3>After</h3>
+          {fixedContent ? <pre>{fixedContent}</pre> : <DiffEmptyState score={score} fixes={activeFixes} />}
+        </div>
       </div>
     </div>
   )
+}
+
+function DiffEmptyState({ score, fixes }) {
+  if (fixes.length) {
+    return <div className="fix-list">{fixes.map((fix, index) => <article key={`${fix.file}-${index}`}><strong>{fix.title}</strong><p>{fix.explanation}</p>{fix.replacement && <pre>{fix.replacement}</pre>}</article>)}</div>
+  }
+
+  return <EmptyState title="No fixed code generated" text={score >= 90 ? 'The review score is high, so the model did not generate a replacement for this file.' : 'The model returned findings but no full replacement code for this file. Use Comments for exact issues, or run a Deep review for stronger fix generation.'} />
 }
 
 function HistoryPage({ reviews, loadReview }) {
