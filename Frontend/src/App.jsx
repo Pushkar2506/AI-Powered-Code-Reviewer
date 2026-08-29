@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import "prismjs/themes/prism-tomorrow.css"
 import Editor from "react-simple-code-editor"
 import prism from "prismjs"
@@ -219,7 +219,8 @@ function App() {
   const [selectedUserReviews, setSelectedUserReviews] = useState([])
   const [code, setCode] = useState(starterCode)
   const [files, setFiles] = useState([{ path: 'src/app.js', content: starterCode }])
-  const [githubUrl, setGithubUrl] = useState('')
+  const [githubRepoUrl, setGithubRepoUrl] = useState('')
+  const [pullRequestUrl, setPullRequestUrl] = useState('')
   const [sourceMode, setSourceMode] = useState('paste')
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [newProjectName, setNewProjectName] = useState('')
@@ -231,7 +232,9 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [reviewLoadingSource, setReviewLoadingSource] = useState('')
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
+  const sourceModeRef = useRef(sourceMode)
 
   const api = useMemo(() => {
     const client = axios.create({ baseURL: API_URL })
@@ -259,6 +262,10 @@ function App() {
     return () => window.clearTimeout(timeout)
   }, [notice, error])
 
+  useEffect(() => {
+    sourceModeRef.current = sourceMode
+  }, [sourceMode])
+
   const resetSessionState = useCallback(() => {
     setUser(null)
     setUsage({ used: 0, limit: 0, remaining: 0 })
@@ -272,6 +279,7 @@ function App() {
     setSelectedUserReviews([])
     setReview('')
     setResult(emptyResult)
+    setReviewLoadingSource('')
     setError('')
     setNotice('')
     setPublicView('landing')
@@ -381,40 +389,52 @@ function App() {
   }
 
   async function reviewCode() {
+    const sourceAtStart = sourceMode
     setIsLoading(true)
+    setReviewLoadingSource(sourceAtStart)
     setError('')
     setNotice('')
 
     try {
       const payload = {
-        sourceType: sourceMode,
+        sourceType: sourceAtStart,
         depth,
         model,
         projectId: selectedProjectId || null,
       }
 
-      if (sourceMode === 'paste') {
+      if (sourceAtStart === 'paste') {
         payload.code = code
       }
 
-      if (sourceMode === 'multi_file') {
+      if (sourceAtStart === 'multi_file') {
         payload.files = files
       }
 
-      if (sourceMode === 'github_repo' || sourceMode === 'pull_request') {
-        payload.githubUrl = githubUrl
+      if (sourceAtStart === 'github_repo') {
+        payload.githubUrl = githubRepoUrl
+      }
+
+      if (sourceAtStart === 'pull_request') {
+        payload.githubUrl = pullRequestUrl
       }
 
       const response = await api.post('/ai/get-review', payload)
       const result = hydrateReviewResult(response.data.result, response.data.review, response.data.savedReview?.files || [])
-      setReview(result.markdown || response.data.review)
-      setResult(result)
       setUsage(response.data.usage)
       setReviews(current => [response.data.savedReview, ...current.filter(item => item.id !== response.data.savedReview.id)])
-      setResultView('report')
-      setNotice(response.data.fallbackUsed
-        ? `Review completed with ${response.data.model} because the selected model was busy.`
-        : 'Review completed and saved.')
+
+      if (sourceModeRef.current === sourceAtStart) {
+        setReview(result.markdown || response.data.review)
+        setResult(result)
+        setResultView('report')
+      }
+
+      setNotice(sourceModeRef.current === sourceAtStart
+        ? response.data.fallbackUsed
+          ? `Review completed with ${response.data.model} because the selected model was busy.`
+          : 'Review completed and saved.'
+        : 'Review completed and saved to History.')
     } catch (error) {
       setError(error.response?.data?.error || 'Unable to generate a review.')
       if (error.response?.data?.usage) {
@@ -422,6 +442,7 @@ function App() {
       }
     } finally {
       setIsLoading(false)
+      setReviewLoadingSource('')
     }
   }
 
@@ -520,6 +541,12 @@ function App() {
     setDepth(item.depth)
     setModel(item.model)
     setSourceMode(item.sourceType || 'paste')
+    if (item.sourceType === 'github_repo') {
+      setGithubRepoUrl(item.sourceUrl || '')
+    }
+    if (item.sourceType === 'pull_request') {
+      setPullRequestUrl(item.sourceUrl || '')
+    }
     setSelectedProjectId(item.projectId ? String(item.projectId) : '')
     setError('')
     setNotice('')
@@ -539,6 +566,31 @@ function App() {
   function removeFile(index) {
     setFiles(current => current.filter((_, fileIndex) => fileIndex !== index))
     setNotice('File removed.')
+  }
+
+  function changeSourceMode(mode) {
+    setSourceMode(mode)
+    setReview('')
+    setResult(emptyResult)
+    setResultView('report')
+    setError('')
+    setNotice('')
+  }
+
+  function clearCurrentSource() {
+    if (sourceMode === 'paste') {
+      setCode('')
+    } else if (sourceMode === 'github_repo') {
+      setGithubRepoUrl('')
+    } else if (sourceMode === 'pull_request') {
+      setPullRequestUrl('')
+    } else {
+      setFiles([{ path: 'src/app.js', content: '' }])
+    }
+
+    setReview('')
+    setResult(emptyResult)
+    setResultView('report')
   }
 
   if (!token || !user) {
@@ -579,10 +631,12 @@ function App() {
         updateFile={updateFile}
         addFile={addFile}
         removeFile={removeFile}
-        githubUrl={githubUrl}
-        setGithubUrl={setGithubUrl}
+        githubRepoUrl={githubRepoUrl}
+        setGithubRepoUrl={setGithubRepoUrl}
+        pullRequestUrl={pullRequestUrl}
+        setPullRequestUrl={setPullRequestUrl}
         sourceMode={sourceMode}
-        setSourceMode={setSourceMode}
+        setSourceMode={changeSourceMode}
         projects={projects}
         selectedProjectId={selectedProjectId}
         setSelectedProjectId={setSelectedProjectId}
@@ -595,7 +649,8 @@ function App() {
         setResultView={setResultView}
         error={error}
         notice={notice}
-        isLoading={isLoading}
+        isLoading={isLoading && reviewLoadingSource === sourceMode}
+        isReviewBusy={isLoading}
         depth={depth}
         setDepth={setDepth}
         model={model}
@@ -603,6 +658,7 @@ function App() {
         models={models}
         usage={usage}
         reviewCode={reviewCode}
+        clearCurrentSource={clearCurrentSource}
         copyReview={copyReview}
         downloadReview={downloadReview}
       />
@@ -778,7 +834,7 @@ function ReviewPage(props) {
           <label><span>Project</span><select value={props.selectedProjectId} onChange={event => props.setSelectedProjectId(event.target.value)}><option value="">No project</option>{props.projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
           <label><span>Model</span><select value={props.model} onChange={event => props.setModel(event.target.value)}>{props.models.map(option => <option key={option.id} value={option.id}>{option.name}</option>)}</select></label>
           <label><span>Depth</span><select value={props.depth} onChange={event => props.setDepth(event.target.value)}>{depthOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-          <button type="button" className="primary-button" onClick={props.reviewCode} disabled={props.isLoading || props.usage.remaining <= 0}>{props.isLoading ? 'Reviewing...' : 'Run Review'}</button>
+          <button type="button" className="primary-button" onClick={props.reviewCode} disabled={props.isReviewBusy || props.usage.remaining <= 0}>{props.isLoading ? 'Reviewing...' : 'Run Review'}</button>
         </div>
       </PageTitle>
 
@@ -788,7 +844,7 @@ function ReviewPage(props) {
 
       <section className="workspace">
         <div className="panel editor-panel">
-          <div className="panel-header"><div><p className="eyebrow">Input</p><h2>{sourceModes.find(mode => mode.id === props.sourceMode)?.label}</h2></div><button type="button" className="ghost-button" onClick={() => props.setCode('')}>Clear</button></div>
+          <div className="panel-header"><div><p className="eyebrow">Input</p><h2>{sourceModes.find(mode => mode.id === props.sourceMode)?.label}</h2></div><button type="button" className="ghost-button" onClick={props.clearCurrentSource}>Clear</button></div>
           <SourceInput {...props} />
         </div>
 
@@ -801,13 +857,13 @@ function ReviewPage(props) {
   )
 }
 
-function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, removeFile, githubUrl, setGithubUrl }) {
+function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, removeFile, githubRepoUrl, setGithubRepoUrl, pullRequestUrl, setPullRequestUrl }) {
   if (sourceMode === 'github_repo') {
-    return <div className="source-form"><label><span>Repository URL</span><input placeholder="https://github.com/owner/repo" value={githubUrl} onChange={event => setGithubUrl(event.target.value)} /></label><p>Reviews up to the first reviewable source files from a public repository.</p></div>
+    return <div className="source-form"><label><span>Repository URL</span><input placeholder="https://github.com/owner/repo" value={githubRepoUrl} onChange={event => setGithubRepoUrl(event.target.value)} /></label><p>Reviews up to the first reviewable source files from a public repository.</p></div>
   }
 
   if (sourceMode === 'pull_request') {
-    return <div className="source-form"><label><span>Pull request URL</span><input placeholder="https://github.com/owner/repo/pull/123" value={githubUrl} onChange={event => setGithubUrl(event.target.value)} /></label><p>Reviews changed files and patches from a public pull request.</p></div>
+    return <div className="source-form"><label><span>Pull request URL</span><input placeholder="https://github.com/owner/repo/pull/123" value={pullRequestUrl} onChange={event => setPullRequestUrl(event.target.value)} /></label><p>Reviews changed files and patches from a public pull request.</p></div>
   }
 
   if (sourceMode === 'multi_file') {
