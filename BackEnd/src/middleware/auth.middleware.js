@@ -12,7 +12,7 @@ async function requireAuth(req, res, next) {
 
         const payload = jwt.verify(token, process.env.JWT_SECRET)
         const result = await query(
-            'SELECT id, name, email, role, monthly_limit, created_at FROM users WHERE id = $1',
+            'SELECT id, name, email, role, status, monthly_limit, created_at FROM users WHERE id = $1',
             [payload.userId]
         )
 
@@ -20,7 +20,13 @@ async function requireAuth(req, res, next) {
             return res.status(401).json({ error: 'Invalid session.' })
         }
 
-        req.user = result.rows[0]
+        const user = result.rows[0]
+
+        if (user.status !== 'active') {
+            return res.status(403).json({ error: 'This account is suspended. Please contact an administrator.' })
+        }
+
+        req.user = user
         return next()
     } catch (error) {
         console.error('Authentication failed:', error)

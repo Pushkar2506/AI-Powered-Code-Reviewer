@@ -6,6 +6,7 @@ const aiRoutes = require('./routes/ai.routes')
 const authRoutes = require('./routes/auth.routes')
 const reviewRoutes = require('./routes/review.routes')
 const adminRoutes = require('./routes/admin.routes')
+const projectRoutes = require('./routes/project.routes')
 
 const app = express()
 
@@ -13,6 +14,27 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http:/
     .split(',')
     .map(origin => origin.trim())
     .filter(Boolean)
+
+const appLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.RATE_LIMIT_APP_MAX_REQUESTS) || 1000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: req => req.method === 'OPTIONS' || req.path === '/health',
+    message: {
+        error: 'Too many requests. Please wait a moment and try again.'
+    }
+})
+
+const aiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.RATE_LIMIT_AI_MAX_REQUESTS) || 40,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        error: 'Too many AI review requests. Please try again later.'
+    }
+})
 
 app.use(helmet())
 
@@ -26,16 +48,7 @@ app.use(cors({
     }
 }))
 
-app.use(rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: Number(process.env.RATE_LIMIT_MAX_REQUESTS) || 60,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: {
-        error: 'Too many review requests. Please try again later.'
-    }
-}))
-
+app.use(appLimiter)
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '256kb' }))
 
 app.get('/', (req, res) => {
@@ -46,9 +59,10 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok' })
 })
 
-app.use('/ai', aiRoutes)
+app.use('/ai', aiLimiter, aiRoutes)
 app.use('/auth', authRoutes)
 app.use('/reviews', reviewRoutes)
+app.use('/projects', projectRoutes)
 app.use('/admin', adminRoutes)
 
 app.use((req, res) => {

@@ -1,11 +1,39 @@
 const { query } = require('../config/database')
 
-async function saveReview({ userId, code, review, model, depth }) {
+async function saveReview({ userId, projectId, code, review, model, depth, sourceType, sourceUrl, score, fixedCode, checklist, comments, files }) {
     const result = await query(
-        `INSERT INTO reviews (user_id, code, review, model, depth)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, code, review, model, depth, created_at`,
-        [userId, code, review, model, depth]
+        `INSERT INTO reviews (
+            user_id,
+            project_id,
+            code,
+            review,
+            model,
+            depth,
+            source_type,
+            source_url,
+            score,
+            fixed_code,
+            checklist,
+            comments,
+            files
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb)
+         RETURNING id, project_id, code, review, model, depth, source_type, source_url, score, fixed_code, checklist, comments, files, created_at`,
+        [
+            userId,
+            projectId || null,
+            code,
+            review,
+            model,
+            depth,
+            sourceType,
+            sourceUrl || null,
+            score,
+            fixedCode || null,
+            JSON.stringify(checklist || []),
+            JSON.stringify(comments || []),
+            JSON.stringify(files || [])
+        ]
     )
 
     return mapReview(result.rows[0])
@@ -13,10 +41,26 @@ async function saveReview({ userId, code, review, model, depth }) {
 
 async function getReviewsByUser(userId) {
     const result = await query(
-        `SELECT id, code, review, model, depth, created_at
+        `SELECT
+            reviews.id,
+            reviews.project_id,
+            reviews.code,
+            reviews.review,
+            reviews.model,
+            reviews.depth,
+            reviews.source_type,
+            reviews.source_url,
+            reviews.score,
+            reviews.fixed_code,
+            reviews.checklist,
+            reviews.comments,
+            reviews.files,
+            reviews.created_at,
+            projects.name AS project_name
          FROM reviews
-         WHERE user_id = $1
-         ORDER BY created_at DESC
+         LEFT JOIN projects ON projects.id = reviews.project_id
+         WHERE reviews.user_id = $1
+         ORDER BY reviews.created_at DESC
          LIMIT 50`,
         [userId]
     )
@@ -29,6 +73,7 @@ async function getAdminStats() {
         SELECT
             (SELECT COUNT(*)::int FROM users) AS users,
             (SELECT COUNT(*)::int FROM reviews) AS reviews,
+            (SELECT COUNT(*)::int FROM projects) AS projects,
             (SELECT COUNT(*)::int FROM reviews WHERE created_at >= date_trunc('month', NOW())) AS reviews_this_month
     `)
 
@@ -79,10 +124,19 @@ async function updateUserLimit(userId, monthlyLimit) {
 function mapReview(review) {
     return {
         id: review.id,
+        projectId: review.project_id,
+        projectName: review.project_name,
         code: review.code,
         review: review.review,
         model: review.model,
         depth: review.depth,
+        sourceType: review.source_type,
+        sourceUrl: review.source_url,
+        score: review.score,
+        fixedCode: review.fixed_code,
+        checklist: review.checklist || [],
+        comments: review.comments || [],
+        files: review.files || [],
         createdAt: review.created_at
     }
 }
