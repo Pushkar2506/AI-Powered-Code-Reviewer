@@ -628,9 +628,64 @@ button:focus-visible {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, var(--editor-width, 50%)) minmax(320px, 1fr);
   gap: 16px;
   min-height: calc(100vh - 164px);
+}
+
+.developer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px 14px;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.split-control {
+  min-width: min(260px, 100%);
+}
+
+.split-control input {
+  width: 100%;
+  min-height: 26px;
+  padding: 0;
+  accent-color: var(--primary);
+}
+
+.editor-panel {
+  outline: 1px solid transparent;
+  transition: outline-color 0.2s ease;
+}
+
+.editor-panel:has(.code-editor:hover) {
+  outline-color: color-mix(in srgb, var(--primary) 24%, transparent);
+}
+
+.editor-fullscreen .editor-panel {
+  position: fixed;
+  inset: 16px;
+  z-index: 20;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.44);
+}
+
+.editor-fullscreen .review-panel {
+  display: none;
 }
 
 .panel {
@@ -796,11 +851,12 @@ button:focus-visible {
   padding: 22px;
 }
 
-.compare-editor textarea {
+.compare-editor label {
+  min-width: 0;
+}
+
+.compare-editor .code-editor {
   min-height: calc(100vh - 330px);
-  background: var(--editor);
-  color: #eef2f6;
-  font-family: "Fira Code", "Fira Mono", Consolas, monospace;
 }
 
 .multi-file-editor {
@@ -826,14 +882,10 @@ button:focus-visible {
   gap: 10px;
 }
 
-.file-card textarea {
-  min-height: 180px;
+.file-card .code-editor {
+  min-height: 220px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--editor);
-  color: #eef2f6;
-  padding: 12px;
-  resize: vertical;
 }
 
 .code-editor {
@@ -843,18 +895,26 @@ button:focus-visible {
   background: var(--editor);
 }
 
-.code-editor > div {
-  min-height: 100%;
+.monaco-code-editor {
+  min-height: calc(100vh - 286px) !important;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
 }
 
-.editor-preview,
-.editor-textarea {
-  min-height: calc(100vh - 286px) !important;
-  font-family: "Fira Code", "Fira Mono", Consolas, monospace !important;
-  font-size: 15px !important;
-  line-height: 1.65 !important;
-  outline: none !important;
-  tab-size: 2;
+.monaco-code-editor > div {
+  min-height: inherit;
+}
+
+.file-card .monaco-code-editor {
+  min-height: 210px !important;
+}
+
+.compare-editor .monaco-code-editor {
+  min-height: calc(100vh - 382px) !important;
+}
+
+.editor-fullscreen .monaco-code-editor {
+  min-height: calc(100vh - 124px) !important;
 }
 
 .review-content {
@@ -1765,8 +1825,17 @@ button:focus-visible {
   .source-tabs,
   .result-actions,
   .report-actions,
+  .developer-toolbar,
+  .editor-actions,
+  .split-control,
   .result-actions button {
     width: 100%;
+  }
+
+  .developer-toolbar,
+  .editor-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .history-report-grid,

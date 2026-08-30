@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import "prismjs/themes/prism-tomorrow.css"
-import Editor from "react-simple-code-editor"
-import prism from "prismjs"
-import "prismjs/components/prism-javascript"
+import MonacoEditor from '@monaco-editor/react'
 import Markdown from "react-markdown"
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
@@ -16,6 +13,8 @@ const TOKEN_KEY = 'ai-powered-code-reveiwer-token'
 const LEGACY_TOKEN_KEY = 'reviewdesk-token'
 const THEME_KEY = 'ai-powered-code-reveiwer-theme'
 const LEGACY_THEME_KEY = 'reviewdesk-theme'
+const DRAFT_KEY = 'ai-powered-code-reveiwer-review-draft'
+const SPLIT_KEY = 'ai-powered-code-reveiwer-split-width'
 
 const fallbackModels = [
   { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', description: 'Best quality for production code review.' },
@@ -110,6 +109,66 @@ const starterCode = `function calculateDiscount(price, percentage) {
   if (!price || !percentage) return 0
   return price - price * percentage / 100
 }`
+
+const reviewableFilePattern = /\.(c|cc|cpp|cs|css|go|html|java|js|jsx|json|md|php|py|rb|rs|sh|sql|ts|tsx|txt|yaml|yml)$/i
+
+function readJsonFromStorage(key, fallback) {
+  try {
+    return JSON.parse(window.localStorage.getItem(key) || '')
+  } catch {
+    return fallback
+  }
+}
+
+function getStoredNumber(key, fallback) {
+  const value = Number(window.localStorage.getItem(key))
+  return Number.isFinite(value) ? value : fallback
+}
+
+function getEditorLanguage(path = '', value = '') {
+  const source = `${path}\n${String(value).slice(0, 500)}`.toLowerCase()
+  const extension = path.split('.').pop()?.toLowerCase()
+  const extensionMap = {
+    c: 'c',
+    cc: 'cpp',
+    cpp: 'cpp',
+    cs: 'csharp',
+    css: 'css',
+    go: 'go',
+    h: 'c',
+    hpp: 'cpp',
+    html: 'html',
+    java: 'java',
+    js: 'javascript',
+    jsx: 'javascript',
+    json: 'json',
+    md: 'markdown',
+    php: 'php',
+    py: 'python',
+    rb: 'ruby',
+    rs: 'rust',
+    sh: 'shell',
+    sql: 'sql',
+    ts: 'typescript',
+    tsx: 'typescript',
+    yaml: 'yaml',
+    yml: 'yaml',
+  }
+
+  if (extensionMap[extension]) return extensionMap[extension]
+  if (source.includes('def ') || source.includes('import pandas')) return 'python'
+  if (source.includes('#include') || source.includes('std::')) return 'cpp'
+  if (source.includes('package main') || source.includes('func main')) return 'go'
+  if (source.includes('public static void main')) return 'java'
+  if (source.includes('<html') || source.includes('</div>')) return 'html'
+  if (source.includes('interface ') || source.includes(': string')) return 'typescript'
+  return 'javascript'
+}
+
+function focusPrimaryEditor() {
+  const editor = document.querySelector('.editor-fullscreen .monaco-editor textarea, .editor-panel .monaco-editor textarea')
+  editor?.focus()
+}
 
 const emptyResult = {
   score: 0,
@@ -279,6 +338,7 @@ function escapeControlCharactersInsideStrings(text) {
 }
 
 function App() {
+  const savedDraft = useMemo(() => readJsonFromStorage(DRAFT_KEY, {}), [])
   const [token, setToken] = useState(() => {
     window.localStorage.removeItem(LEGACY_TOKEN_KEY)
     return window.localStorage.getItem(TOKEN_KEY) || ''
@@ -302,13 +362,15 @@ function App() {
   const [adminFilters, setAdminFilters] = useState(initialAdminFilters)
   const [selectedAdminUser, setSelectedAdminUser] = useState(null)
   const [selectedUserReviews, setSelectedUserReviews] = useState([])
-  const [code, setCode] = useState(starterCode)
-  const [files, setFiles] = useState([{ path: 'src/app.js', content: starterCode }])
-  const [githubRepoUrl, setGithubRepoUrl] = useState('')
-  const [pullRequestUrl, setPullRequestUrl] = useState('')
-  const [beforeCode, setBeforeCode] = useState('')
-  const [afterCode, setAfterCode] = useState('')
-  const [sourceMode, setSourceMode] = useState('paste')
+  const [code, setCode] = useState(savedDraft.code || starterCode)
+  const [files, setFiles] = useState(Array.isArray(savedDraft.files) && savedDraft.files.length ? savedDraft.files : [{ path: 'src/app.js', content: starterCode }])
+  const [githubRepoUrl, setGithubRepoUrl] = useState(savedDraft.githubRepoUrl || '')
+  const [pullRequestUrl, setPullRequestUrl] = useState(savedDraft.pullRequestUrl || '')
+  const [beforeCode, setBeforeCode] = useState(savedDraft.beforeCode || '')
+  const [afterCode, setAfterCode] = useState(savedDraft.afterCode || '')
+  const [sourceMode, setSourceMode] = useState(savedDraft.sourceMode || 'paste')
+  const [editorWidth, setEditorWidth] = useState(() => Math.min(Math.max(getStoredNumber(SPLIT_KEY, 50), 35), 65))
+  const [isEditorFullscreen, setIsEditorFullscreen] = useState(false)
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [newProjectName, setNewProjectName] = useState('')
   const [review, setReview] = useState('')
@@ -338,6 +400,9 @@ function App() {
   const [profileForm, setProfileForm] = useState({ name: '', bio: '', avatarUrl: '' })
   const [workspaceForm, setWorkspaceForm] = useState({ name: '', inviteEmail: '', inviteRole: 'member', inviteToken: '' })
   const sourceModeRef = useRef(sourceMode)
+  const editorFocusRef = useRef(null)
+  const reviewCodeRef = useRef(null)
+  const saveDraftRef = useRef(null)
 
   const setPublicView = useCallback((view, options = {}) => {
     setPublicViewState(view)
@@ -390,6 +455,54 @@ function App() {
   useEffect(() => {
     sourceModeRef.current = sourceMode
   }, [sourceMode])
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        sourceMode,
+        code,
+        files,
+        githubRepoUrl,
+        pullRequestUrl,
+        beforeCode,
+        afterCode,
+      }))
+    }, 700)
+
+    return () => window.clearTimeout(timeout)
+  }, [afterCode, beforeCode, code, files, githubRepoUrl, pullRequestUrl, sourceMode])
+
+  useEffect(() => {
+    window.localStorage.setItem(SPLIT_KEY, String(editorWidth))
+  }, [editorWidth])
+
+  useEffect(() => {
+    function handleKeyboardShortcut(event) {
+      const commandKey = event.ctrlKey || event.metaKey
+      if (commandKey && event.key === 'Enter') {
+        event.preventDefault()
+        reviewCodeRef.current?.()
+      }
+      if (commandKey && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        saveDraftRef.current?.()
+      }
+      if (commandKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        if (typeof editorFocusRef.current?.focus === 'function') {
+          editorFocusRef.current.focus()
+        } else {
+          focusPrimaryEditor()
+        }
+      }
+      if (event.key === 'Escape') {
+        setIsEditorFullscreen(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyboardShortcut, { capture: true })
+    return () => window.removeEventListener('keydown', handleKeyboardShortcut, { capture: true })
+  }, [])
 
   useEffect(() => {
     function handlePopState() {
@@ -1101,6 +1214,56 @@ function App() {
     setNotice('File removed.')
   }
 
+  async function handleFilesSelected(fileList) {
+    const selectedFiles = Array.from(fileList || [])
+      .filter(file => file.type.startsWith('text/') || reviewableFilePattern.test(file.name))
+      .slice(0, 20)
+
+    if (!selectedFiles.length) {
+      setError('Choose text or source code files to import.')
+      return
+    }
+
+    try {
+      const importedFiles = await Promise.all(selectedFiles.map(async file => ({
+        path: file.webkitRelativePath || file.name,
+        content: await file.text(),
+      })))
+
+      if (sourceMode === 'compare_versions') {
+        setBeforeCode(importedFiles[0]?.content || '')
+        setAfterCode(importedFiles[1]?.content || importedFiles[0]?.content || '')
+      } else if (sourceMode === 'multi_file' || importedFiles.length > 1) {
+        setFiles(importedFiles)
+        setSourceMode('multi_file')
+      } else {
+        setCode(importedFiles[0].content)
+        setSourceMode('paste')
+      }
+
+      setReview('')
+      setResult(emptyResult)
+      setResultView('report')
+      setError('')
+      setNotice(importedFiles.length === 1 ? 'File imported.' : `${importedFiles.length} files imported.`)
+    } catch {
+      setError('Unable to read the selected files.')
+    }
+  }
+
+  function saveDraftNow() {
+    window.localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      sourceMode,
+      code,
+      files,
+      githubRepoUrl,
+      pullRequestUrl,
+      beforeCode,
+      afterCode,
+    }))
+    setNotice('Draft saved.')
+  }
+
   function changeSourceMode(mode) {
     setSourceMode(mode)
     setReview('')
@@ -1128,6 +1291,9 @@ function App() {
     setResult(emptyResult)
     setResultView('report')
   }
+
+  reviewCodeRef.current = reviewCode
+  saveDraftRef.current = saveDraftNow
 
   if (publicView === 'shared') {
     return (
@@ -1211,6 +1377,13 @@ function App() {
         model={model}
         setModel={setModel}
         models={models}
+        editorWidth={editorWidth}
+        setEditorWidth={setEditorWidth}
+        isEditorFullscreen={isEditorFullscreen}
+        setIsEditorFullscreen={setIsEditorFullscreen}
+        handleFilesSelected={handleFilesSelected}
+        editorFocusRef={editorFocusRef}
+        saveDraftNow={saveDraftNow}
         aiOptions={aiOptions}
         setAiOptions={setAiOptions}
         usage={usage}
@@ -1523,9 +1696,18 @@ function DashboardPage({ user, usage, reviews, projects, setActivePage, loadRevi
 
 function ReviewPage(props) {
   const selectedModel = props.models.find(item => item.id === props.model) || props.models[0]
+  const fileInputRef = useRef(null)
+  const workspaceStyle = props.isEditorFullscreen
+    ? undefined
+    : { '--editor-width': `${props.editorWidth}%` }
+
+  function handleDrop(event) {
+    event.preventDefault()
+    props.handleFilesSelected(event.dataTransfer.files)
+  }
 
   return (
-    <div className="review-page">
+    <div className={props.isEditorFullscreen ? 'review-page editor-fullscreen' : 'review-page'}>
       <PageTitle eyebrow="Reviewer" title="Analyze source code">
         <div className="toolbar">
           <label><span>Project</span><select value={props.selectedProjectId} onChange={event => props.setSelectedProjectId(event.target.value)}><option value="">No project</option>{props.projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
@@ -1538,11 +1720,26 @@ function ReviewPage(props) {
       <section className="project-create"><input placeholder="Create project workspace" value={props.newProjectName} onChange={event => props.setNewProjectName(event.target.value)} /><button type="button" className="ghost-button" onClick={props.createProject}>Create Project</button></section>
       <section className="model-note"><strong>{selectedModel?.name}</strong><span>{selectedModel?.description}</span></section>
       <AiOptionsPanel aiOptions={props.aiOptions} setAiOptions={props.setAiOptions} />
+      <section className="developer-toolbar">
+        <div className="editor-actions">
+          <input ref={fileInputRef} className="hidden-file-input" type="file" multiple onChange={event => props.handleFilesSelected(event.target.files)} />
+          <button type="button" className="ghost-button" onClick={() => fileInputRef.current?.click()}>Upload Files</button>
+          <button type="button" className="ghost-button" onClick={props.saveDraftNow}>Save Draft</button>
+          <button type="button" className="ghost-button" onClick={() => props.setIsEditorFullscreen(!props.isEditorFullscreen)}>{props.isEditorFullscreen ? 'Exit Full Screen' : 'Full Screen'}</button>
+        </div>
+        <label className="split-control"><span>Editor width</span><input type="range" min="35" max="65" value={props.editorWidth} onChange={event => props.setEditorWidth(Number(event.target.value))} /></label>
+      </section>
       <section className="source-tabs">{sourceModes.map(mode => <button key={mode.id} type="button" className={props.sourceMode === mode.id ? 'active' : ''} onClick={() => props.setSourceMode(mode.id)}>{mode.label}</button>)}</section>
 
-      <section className="workspace">
-        <div className="panel editor-panel">
-          <div className="panel-header"><div><p className="eyebrow">Input</p><h2>{sourceModes.find(mode => mode.id === props.sourceMode)?.label}</h2></div><button type="button" className="ghost-button" onClick={props.clearCurrentSource}>Clear</button></div>
+      <section className="workspace" style={workspaceStyle}>
+        <div className="panel editor-panel" onDrop={handleDrop} onDragOver={event => event.preventDefault()}>
+          <div className="panel-header">
+            <div><p className="eyebrow">Input</p><h2>{sourceModes.find(mode => mode.id === props.sourceMode)?.label}</h2></div>
+            <div className="result-actions">
+              {props.isEditorFullscreen && <button type="button" className="primary-button" onClick={() => props.setIsEditorFullscreen(false)}>Exit Full Screen</button>}
+              <button type="button" className="ghost-button" onClick={props.clearCurrentSource}>Clear</button>
+            </div>
+          </div>
           <SourceInput {...props} />
         </div>
 
@@ -1592,7 +1789,7 @@ function AiOptionsPanel({ aiOptions, setAiOptions }) {
   )
 }
 
-function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, removeFile, githubRepoUrl, setGithubRepoUrl, pullRequestUrl, setPullRequestUrl, beforeCode, setBeforeCode, afterCode, setAfterCode }) {
+function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, removeFile, githubRepoUrl, setGithubRepoUrl, pullRequestUrl, setPullRequestUrl, beforeCode, setBeforeCode, afterCode, setAfterCode, editorFocusRef }) {
   if (sourceMode === 'github_repo') {
     return <div className="source-form"><label><span>Repository URL</span><input placeholder="https://github.com/owner/repo" value={githubRepoUrl} onChange={event => setGithubRepoUrl(event.target.value)} /></label><p>Reviews up to the first reviewable source files from a public repository.</p></div>
   }
@@ -1602,16 +1799,45 @@ function SourceInput({ sourceMode, code, setCode, files, updateFile, addFile, re
   }
 
   if (sourceMode === 'multi_file') {
-    return <div className="multi-file-editor">{files.map((file, index) => <div className="file-card" key={index}><div className="file-card-header"><input value={file.path} onChange={event => updateFile(index, { path: event.target.value })} /><button type="button" className="ghost-button" onClick={() => removeFile(index)} disabled={files.length === 1}>Remove</button></div><textarea value={file.content} onChange={event => updateFile(index, { content: event.target.value })} /></div>)}<button type="button" className="ghost-button" onClick={addFile}>Add File</button></div>
+    return <div className="multi-file-editor">{files.map((file, index) => <div className="file-card" key={index}><div className="file-card-header"><input value={file.path} onChange={event => updateFile(index, { path: event.target.value })} /><button type="button" className="ghost-button" onClick={() => removeFile(index)} disabled={files.length === 1}>Remove</button></div><MonacoCodeEditor value={file.content} onChange={value => updateFile(index, { content: value })} path={file.path} /></div>)}<button type="button" className="ghost-button" onClick={addFile}>Add File</button></div>
   }
 
   if (sourceMode === 'compare_versions') {
-    return <div className="compare-editor"><label><span>Before version</span><textarea value={beforeCode} onChange={event => setBeforeCode(event.target.value)} placeholder="Paste the current or old version here." /></label><label><span>After version</span><textarea value={afterCode} onChange={event => setAfterCode(event.target.value)} placeholder="Paste the proposed or new version here." /></label></div>
+    return <div className="compare-editor"><label><span>Before version</span><MonacoCodeEditor value={beforeCode} onChange={setBeforeCode} path="before.js" /></label><label><span>After version</span><MonacoCodeEditor value={afterCode} onChange={setAfterCode} path="after.js" /></label></div>
   }
 
+  return <MonacoCodeEditor value={code} onChange={setCode} path="source.js" editorRef={editorFocusRef} />
+}
+
+function MonacoCodeEditor({ value, onChange, path = '', editorRef }) {
+  const language = getEditorLanguage(path, value)
+
   return (
-    <div className="code-editor">
-      <Editor value={code} onValueChange={setCode} highlight={value => prism.highlight(value, prism.languages.javascript, 'javascript')} padding={16} textareaClassName="editor-textarea" preClassName="editor-preview" />
+    <div className="code-editor monaco-code-editor">
+      <MonacoEditor
+        path={path}
+        language={language}
+        theme="vs-dark"
+        value={value}
+        onChange={nextValue => onChange(nextValue || '')}
+        onMount={editor => {
+          if (editorRef) editorRef.current = editor
+        }}
+        options={{
+          automaticLayout: true,
+          bracketPairColorization: { enabled: true },
+          fontFamily: '"Fira Code", "Fira Mono", Consolas, monospace',
+          fontSize: 14,
+          lineHeight: 24,
+          lineNumbers: 'on',
+          minimap: { enabled: false },
+          renderLineHighlight: 'all',
+          scrollBeyondLastLine: false,
+          smoothScrolling: true,
+          tabSize: 2,
+          wordWrap: 'on',
+        }}
+      />
     </div>
   )
 }
