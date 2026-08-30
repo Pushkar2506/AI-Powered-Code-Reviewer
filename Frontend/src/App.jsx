@@ -7,6 +7,7 @@ import axios from 'axios'
 import './App.css'
 
 const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:3000').replace(/\/$/, '')
+const RAZORPAY_KEY_ID = import.meta.env.VITE_RAZORPAY_KEY_ID || ''
 const APP_NAME = 'AI Powered Code Reveiwer'
 const SYSTEM_ADMIN_EMAIL = 'admin@gmail.com'
 const TOKEN_KEY = 'ai-powered-code-reveiwer-token'
@@ -79,6 +80,9 @@ const pagePaths = {
   history: '/history',
   team: '/team',
   profile: '/profile',
+  billing: '/billing',
+  developer: '/developer',
+  compliance: '/compliance',
   settings: '/settings',
 }
 
@@ -203,6 +207,14 @@ function formatCurrency(value) {
   }).format(Number(value || 0))
 }
 
+function formatRupeesFromCents(value) {
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0) / 100)
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -210,6 +222,18 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
+}
+
+function loadRazorpayCheckout() {
+  if (window.Razorpay) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    script.async = true
+    script.onload = resolve
+    script.onerror = () => reject(new Error('Unable to load Razorpay Checkout.'))
+    document.body.appendChild(script)
+  })
 }
 
 function hydrateReviewResult(result, reviewText, files = []) {
@@ -362,6 +386,13 @@ function App() {
   const [adminFilters, setAdminFilters] = useState(initialAdminFilters)
   const [selectedAdminUser, setSelectedAdminUser] = useState(null)
   const [selectedUserReviews, setSelectedUserReviews] = useState([])
+  const [billing, setBilling] = useState(null)
+  const [developerResources, setDeveloperResources] = useState({ apiKeys: [], webhooks: [], limits: { apiKeys: 0, webhooks: 0 } })
+  const [compliance, setCompliance] = useState({ privacy: null, auditLogs: [] })
+  const [apiKeyForm, setApiKeyForm] = useState({ name: 'Production API key' })
+  const [newApiKey, setNewApiKey] = useState('')
+  const [webhookForm, setWebhookForm] = useState({ url: '', events: ['review.created'] })
+  const [newWebhookSecret, setNewWebhookSecret] = useState('')
   const [code, setCode] = useState(savedDraft.code || starterCode)
   const [files, setFiles] = useState(Array.isArray(savedDraft.files) && savedDraft.files.length ? savedDraft.files : [{ path: 'src/app.js', content: starterCode }])
   const [githubRepoUrl, setGithubRepoUrl] = useState(savedDraft.githubRepoUrl || '')
@@ -533,6 +564,11 @@ function App() {
     setAdminFilters(initialAdminFilters)
     setSelectedAdminUser(null)
     setSelectedUserReviews([])
+    setBilling(null)
+    setDeveloperResources({ apiKeys: [], webhooks: [], limits: { apiKeys: 0, webhooks: 0 } })
+    setCompliance({ privacy: null, auditLogs: [] })
+    setNewApiKey('')
+    setNewWebhookSecret('')
     setReview('')
     setResult(emptyResult)
     setReviewLoadingSource('')
@@ -582,6 +618,17 @@ function App() {
     return response.data.reviews
   }, [api])
 
+  const loadBusinessData = useCallback(async () => {
+    const [billingResponse, developerResponse, complianceResponse] = await Promise.all([
+      api.get('/billing'),
+      api.get('/developer'),
+      api.get('/compliance'),
+    ])
+    setBilling(billingResponse.data.billing)
+    setDeveloperResources(developerResponse.data)
+    setCompliance(complianceResponse.data)
+  }, [api])
+
   const loadAppData = useCallback(async () => {
     try {
       const [profileResponse, modelsResponse, projectsResponse] = await Promise.all([
@@ -601,6 +648,7 @@ function App() {
         avatarUrl: profileResponse.data.user.avatarUrl || ''
       })
       setModels(modelsResponse.data.models)
+      await loadBusinessData()
       setAdminStats(null)
       setAdminAnalytics(null)
       setAdminUsers([])
@@ -622,7 +670,7 @@ function App() {
     } catch {
       signOut()
     }
-  }, [api, loadAdminData, loadReviews, setActivePage, signOut])
+  }, [api, loadAdminData, loadBusinessData, loadReviews, setActivePage, signOut])
 
   const verifyEmailToken = useCallback(async (verificationToken) => {
     try {
@@ -770,7 +818,9 @@ function App() {
 
       const result = hydrateReviewResult(responseData.result, responseData.review, responseData.savedReview?.files || [])
       setUsage(responseData.usage)
-      setReviews(current => [responseData.savedReview, ...current.filter(item => item.id !== responseData.savedReview.id)])
+      if (responseData.savedReview?.id) {
+        setReviews(current => [responseData.savedReview, ...current.filter(item => item.id !== responseData.savedReview.id)])
+      }
 
       if (sourceModeRef.current === sourceAtStart) {
         setReview(result.markdown || responseData.review)
@@ -781,8 +831,8 @@ function App() {
       setNotice(sourceModeRef.current === sourceAtStart
         ? responseData.fallbackUsed
           ? `Review completed with ${responseData.model} because the selected model was busy.`
-          : 'Review completed and saved.'
-        : 'Review completed and saved to History.')
+          : responseData.savedReview?.id ? 'Review completed and saved.' : 'Review completed. History saving is disabled.'
+        : responseData.savedReview?.id ? 'Review completed and saved to History.' : 'Review completed. History saving is disabled.')
     } catch (error) {
       setError(error.response?.data?.error || error.message || 'Unable to generate a review.')
       if (error.response?.data?.usage) {
@@ -883,6 +933,138 @@ function App() {
       setSelectedUserReviews(response.data.reviews)
     } catch (error) {
       setError(error.response?.data?.error || 'Unable to load review history.')
+    }
+  }
+
+  async function selectFreePlan() {
+    try {
+      setError('')
+      const response = await api.post('/billing/free')
+      setBilling(response.data.billing)
+      setUsage(current => ({ ...current, limit: response.data.billing.subscription.includedReviews, remaining: Math.max(response.data.billing.subscription.includedReviews - current.used, 0) }))
+      setNotice('Free plan selected.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to select plan.')
+    }
+  }
+
+  async function startRazorpayCheckout(plan) {
+    try {
+      setError('')
+      setNotice('')
+      await loadRazorpayCheckout()
+      const response = await api.post('/billing/checkout', { plan })
+      const checkout = response.data.checkout
+
+      const razorpay = new window.Razorpay({
+        key: checkout.keyId || RAZORPAY_KEY_ID,
+        order_id: checkout.orderId,
+        amount: checkout.amount,
+        currency: checkout.currency || 'INR',
+        name: APP_NAME,
+        description: `${checkout.plan.name} plan`,
+        prefill: {
+          name: user.name,
+          email: user.email
+        },
+        theme: {
+          color: '#2563eb'
+        },
+        handler: async payment => {
+          const verifyResponse = await api.post('/billing/verify', {
+            plan,
+            razorpay_payment_id: payment.razorpay_payment_id,
+            razorpay_order_id: payment.razorpay_order_id,
+            razorpay_signature: payment.razorpay_signature,
+          })
+          setBilling(verifyResponse.data.billing)
+          setUsage(current => ({
+            ...current,
+            limit: verifyResponse.data.billing.subscription.includedReviews,
+            remaining: Math.max(verifyResponse.data.billing.subscription.includedReviews - current.used, 0)
+          }))
+          setNotice(`${checkout.plan.name} plan activated.`)
+        },
+        modal: {
+          ondismiss: () => setNotice('Checkout closed.')
+        }
+      })
+
+      razorpay.open()
+    } catch (error) {
+      setError(error.response?.data?.error || error.message || 'Unable to start checkout.')
+    }
+  }
+
+  async function createApiKey() {
+    try {
+      setError('')
+      const response = await api.post('/developer/api-keys', { name: apiKeyForm.name })
+      setNewApiKey(response.data.rawKey)
+      setDeveloperResources(current => ({ ...current, apiKeys: [response.data.apiKey, ...current.apiKeys] }))
+      setNotice('API key created.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to create API key.')
+    }
+  }
+
+  async function revokeApiKey(keyId) {
+    try {
+      const response = await api.delete(`/developer/api-keys/${keyId}`)
+      setDeveloperResources(current => ({
+        ...current,
+        apiKeys: current.apiKeys.map(key => key.id === response.data.apiKey.id ? response.data.apiKey : key)
+      }))
+      setNotice('API key revoked.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to revoke API key.')
+    }
+  }
+
+  async function createWebhookEndpoint() {
+    try {
+      setError('')
+      const response = await api.post('/developer/webhooks', webhookForm)
+      setNewWebhookSecret(response.data.signingSecret)
+      setWebhookForm(current => ({ ...current, url: '' }))
+      setDeveloperResources(current => ({ ...current, webhooks: [response.data.webhook, ...current.webhooks] }))
+      setNotice('Webhook endpoint created.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to create webhook.')
+    }
+  }
+
+  async function deleteWebhookEndpoint(webhookId) {
+    try {
+      const response = await api.delete(`/developer/webhooks/${webhookId}`)
+      setDeveloperResources(current => ({
+        ...current,
+        webhooks: current.webhooks.map(webhook => webhook.id === response.data.webhook.id ? response.data.webhook : webhook)
+      }))
+      setNotice('Webhook disabled.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to disable webhook.')
+    }
+  }
+
+  async function updatePrivacySettings(settings) {
+    try {
+      const response = await api.patch('/compliance/privacy', settings)
+      setCompliance(current => ({ ...current, privacy: response.data.privacy }))
+      setNotice('Privacy controls updated.')
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to update privacy controls.')
+    }
+  }
+
+  async function applyDataRetention() {
+    try {
+      const response = await api.post('/compliance/retention/apply')
+      await loadReviews(historyFilters)
+      await loadBusinessData()
+      setNotice(`${response.data.deleted || 0} old review record(s) retired.`)
+    } catch (error) {
+      setError(error.response?.data?.error || 'Unable to apply retention policy.')
     }
   }
 
@@ -1426,6 +1608,37 @@ function App() {
       />
     ),
     profile: <ProfilePage user={user} usage={usage} reviews={reviews} profileForm={profileForm} setProfileForm={setProfileForm} saveProfile={saveProfile} />,
+    billing: (
+      <BillingPage
+        billing={billing}
+        selectFreePlan={selectFreePlan}
+        startRazorpayCheckout={startRazorpayCheckout}
+      />
+    ),
+    developer: (
+      <DeveloperPage
+        resources={developerResources}
+        apiKeyForm={apiKeyForm}
+        setApiKeyForm={setApiKeyForm}
+        newApiKey={newApiKey}
+        setNewApiKey={setNewApiKey}
+        createApiKey={createApiKey}
+        revokeApiKey={revokeApiKey}
+        webhookForm={webhookForm}
+        setWebhookForm={setWebhookForm}
+        newWebhookSecret={newWebhookSecret}
+        setNewWebhookSecret={setNewWebhookSecret}
+        createWebhookEndpoint={createWebhookEndpoint}
+        deleteWebhookEndpoint={deleteWebhookEndpoint}
+      />
+    ),
+    compliance: (
+      <CompliancePage
+        compliance={compliance}
+        updatePrivacySettings={updatePrivacySettings}
+        applyDataRetention={applyDataRetention}
+      />
+    ),
     admin: (
       <AdminPage
         stats={adminStats}
@@ -1470,8 +1683,8 @@ function App() {
 
         <nav className="nav-list">
           {(user.role === 'admin'
-            ? [['admin', 'Admin Dashboard'], ['review', 'Review'], ['history', 'History'], ['team', 'Team'], ['profile', 'Profile'], ['settings', 'Settings']]
-            : [['dashboard', 'Dashboard'], ['review', 'Review'], ['history', 'History'], ['team', 'Team'], ['profile', 'Profile'], ['settings', 'Settings']]
+            ? [['admin', 'Admin Dashboard'], ['review', 'Review'], ['history', 'History'], ['team', 'Team'], ['billing', 'Billing'], ['developer', 'Developer'], ['compliance', 'Compliance'], ['profile', 'Profile'], ['settings', 'Settings']]
+            : [['dashboard', 'Dashboard'], ['review', 'Review'], ['history', 'History'], ['team', 'Team'], ['billing', 'Billing'], ['developer', 'Developer'], ['compliance', 'Compliance'], ['profile', 'Profile'], ['settings', 'Settings']]
           ).map(([page, label]) => (
             <button key={page} type="button" className={activePage === page ? 'nav-item active' : 'nav-item'} onClick={() => setActivePage(page)}>
               {label}
@@ -2286,6 +2499,146 @@ function ProfilePage({ user, usage, reviews, profileForm, setProfileForm, savePr
           <div className="section-heading"><div><h2>Activity</h2><p>Your account status and review activity.</p></div></div>
           <dl className="detail-list"><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Email verified</dt><dd>{user.emailVerified ? 'Yes' : 'No'}</dd></div><div><dt>Global role</dt><dd>{user.role}</dd></div><div><dt>Monthly usage</dt><dd>{usage.used}/{usage.limit}</dd></div><div><dt>Saved reviews</dt><dd>{reviews.length}</dd></div></dl>
         </div>
+      </section>
+    </div>
+  )
+}
+
+function BillingPage({ billing, selectFreePlan, startRazorpayCheckout }) {
+  const plans = billing?.plans || []
+  const currentPlan = billing?.currentPlan
+  const pendingPlan = billing?.pendingPlan
+  const scheduledDowngrade = billing?.subscription?.metadata?.scheduledDowngradeTo
+  const usage = billing?.usage
+
+  return (
+    <div className="page-stack">
+      <PageTitle eyebrow="Billing" title="Plans and usage" />
+      <section className="metric-grid">
+        <Metric label="Current plan" value={currentPlan?.name || '-'} />
+        <Metric label="Included reviews" value={usage?.included ?? '-'} />
+        <Metric label="Used this month" value={usage?.used ?? 0} />
+        <Metric label="Estimated overage" value={usage?.estimatedOverageLabel || '₹0.00'} />
+      </section>
+      {pendingPlan && <section className="wide-panel"><div className="section-heading"><div><h2>Checkout not completed</h2><p>Your {pendingPlan.name} checkout is pending. The plan becomes current only after Razorpay returns a verified payment.</p></div></div></section>}
+      {scheduledDowngrade && <section className="wide-panel"><div className="section-heading"><div><h2>Plan change scheduled</h2><p>Your account will move to Free at the end of the current billing period. Your current paid access remains active until then.</p></div></div></section>}
+      <section className="plan-grid">
+        {plans.map(plan => (
+          <article className={currentPlan?.id === plan.id ? 'plan-card active' : 'plan-card'} key={plan.id}>
+            <div>
+              <span className="pill">{currentPlan?.id === plan.id ? 'Current' : 'Available'}</span>
+              <h2>{plan.name}</h2>
+              <strong>{plan.priceLabel}</strong>
+              <p>{plan.description}</p>
+            </div>
+            <dl className="detail-list compact-details">
+              <div><dt>Monthly reviews</dt><dd>{plan.includedReviews}</dd></div>
+              <div><dt>Overage</dt><dd>{plan.overagePriceCents ? `${formatRupeesFromCents(plan.overagePriceCents)} / review` : 'Hard limit'}</dd></div>
+              <div><dt>API keys</dt><dd>{plan.apiKeyLimit}</dd></div>
+              <div><dt>Webhooks</dt><dd>{plan.webhookLimit}</dd></div>
+            </dl>
+            <ul className="feature-list">{plan.features.map(feature => <li key={feature}>{feature}</li>)}</ul>
+            {plan.id === 'free'
+              ? <button type="button" className="ghost-button" onClick={selectFreePlan} disabled={currentPlan?.id === 'free' || Boolean(scheduledDowngrade)}>{currentPlan?.id === 'free' ? 'Current Plan' : scheduledDowngrade ? 'Scheduled' : 'Move to Free'}</button>
+              : <button type="button" className="primary-button" onClick={() => startRazorpayCheckout(plan.id)} disabled={currentPlan?.id === plan.id}>Upgrade to {plan.name}</button>}
+          </article>
+        ))}
+      </section>
+      <section className="wide-panel">
+        <div className="section-heading"><div><h2>Usage-based billing</h2><p>Included reviews are counted monthly. Paid plans estimate overage for reviews beyond the included allowance.</p></div></div>
+        <div className="usage-bar"><span style={{ width: `${Math.min(((usage?.used || 0) / Math.max(usage?.included || 1, 1)) * 100, 100)}%` }} /></div>
+        <dl className="detail-list"><div><dt>Billable overage</dt><dd>{usage?.billableOverage || 0} review(s)</dd></div><div><dt>Projected overage</dt><dd>{usage?.estimatedOverageLabel || '₹0.00'}</dd></div><div><dt>Status</dt><dd>{billing?.subscription?.status || 'active'}</dd></div></dl>
+      </section>
+    </div>
+  )
+}
+
+function DeveloperPage({ resources, apiKeyForm, setApiKeyForm, newApiKey, setNewApiKey, createApiKey, revokeApiKey, webhookForm, setWebhookForm, newWebhookSecret, setNewWebhookSecret, createWebhookEndpoint, deleteWebhookEndpoint }) {
+  const apiDocs = {
+    endpoint: '/api/v1/reviews',
+    method: 'POST',
+    body: JSON.stringify({ sourceType: 'paste', code: 'function sum(a, b) { return a + b }', depth: 'standard' }, null, 2)
+  }
+  const webhookEvents = ['review.created', 'review.failed', 'usage.limit_reached', 'subscription.updated']
+
+  function toggleWebhookEvent(eventName) {
+    setWebhookForm(current => ({
+      ...current,
+      events: current.events.includes(eventName)
+        ? current.events.filter(item => item !== eventName)
+        : [...current.events, eventName]
+    }))
+  }
+
+  return (
+    <div className="page-stack">
+      <PageTitle eyebrow="Developer" title="API and integrations" />
+      {newApiKey && <section className="wide-panel sensitive-panel"><div className="section-heading"><div><h2>New API key</h2><p>This key is shown once. Store it securely before closing this panel.</p></div><button type="button" className="ghost-button" onClick={() => setNewApiKey('')}>Close</button></div><code>{newApiKey}</code></section>}
+      {newWebhookSecret && <section className="wide-panel sensitive-panel"><div className="section-heading"><div><h2>Webhook signing secret</h2><p>This secret is shown once. Use it to verify events delivered to your endpoint.</p></div><button type="button" className="ghost-button" onClick={() => setNewWebhookSecret('')}>Close</button></div><code>{newWebhookSecret}</code></section>}
+      <section className="settings-grid">
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>API keys</h2><p>Create and revoke developer keys for server-to-server review requests.</p></div><span className="pill">{resources.apiKeys.length}/{resources.limits.apiKeys}</span></div>
+          <div className="project-create"><input value={apiKeyForm.name} onChange={event => setApiKeyForm({ name: event.target.value })} placeholder="Key name" /><button type="button" className="ghost-button" onClick={createApiKey}>Create Key</button></div>
+          <div className="compact-list top-space">{resources.apiKeys.length ? resources.apiKeys.map(key => <div key={key.id}><span><strong>{key.name}</strong><small>{key.keyPrefix}... · {key.status}</small></span><span>{key.lastUsedAt ? `Used ${formatDate(key.lastUsedAt)}` : 'Never used'}</span><button type="button" className="ghost-button" onClick={() => revokeApiKey(key.id)} disabled={key.status !== 'active'}>Revoke</button></div>) : <EmptyState title="No API keys" text="Create a key to call the public review API from backend services." />}</div>
+        </div>
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Webhook integrations</h2><p>Register endpoints for product events and review automation.</p></div><span className="pill">{resources.webhooks.length}/{resources.limits.webhooks}</span></div>
+          <label><span>Endpoint URL</span><input value={webhookForm.url} onChange={event => setWebhookForm({ ...webhookForm, url: event.target.value })} placeholder="https://example.com/webhooks/code-reviewer" /></label>
+          <div className="chip-list top-space">{webhookEvents.map(eventName => <button type="button" key={eventName} className={webhookForm.events.includes(eventName) ? 'chip active' : 'chip'} onClick={() => toggleWebhookEvent(eventName)}>{eventName}</button>)}</div>
+          <button type="button" className="ghost-button top-space" onClick={createWebhookEndpoint}>Create Webhook</button>
+          <div className="compact-list top-space">{resources.webhooks.length ? resources.webhooks.map(webhook => <div key={webhook.id}><span><strong>{webhook.url}</strong><small>{webhook.events.join(', ') || 'No events'} · {webhook.status}</small></span><span>{webhook.lastDeliveryStatus || 'No delivery yet'}</span><button type="button" className="ghost-button" onClick={() => deleteWebhookEndpoint(webhook.id)} disabled={webhook.status !== 'active'}>Disable</button></div>) : <EmptyState title="No webhooks" text="Create an endpoint when you want external systems to react to review events." />}</div>
+        </div>
+      </section>
+      <section className="wide-panel">
+        <div className="section-heading"><div><h2>Public API documentation</h2><p>Use API keys to create reviews from CI pipelines, internal tools, or automations.</p></div></div>
+        <div className="api-doc-grid">
+          <div><span className="pill">{apiDocs.method}</span><code>{apiDocs.endpoint}</code></div>
+          <pre>{apiDocs.body}</pre>
+          <pre>{`curl -X POST "$API_URL${apiDocs.endpoint}" \\
+  -H "x-api-key: acr_..." \\
+  -H "Content-Type: application/json" \\
+  -d '${apiDocs.body.replace(/\n/g, '')}'`}</pre>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function CompliancePage({ compliance, updatePrivacySettings, applyDataRetention }) {
+  const privacy = compliance.privacy || {
+    saveReviews: true,
+    allowShareLinks: true,
+    allowProductEmails: false,
+    retentionDays: 365,
+    deleteAfterRetention: false
+  }
+
+  function patchPrivacy(changes) {
+    updatePrivacySettings({ ...privacy, ...changes })
+  }
+
+  return (
+    <div className="page-stack">
+      <PageTitle eyebrow="Compliance" title="Privacy and audit controls" />
+      <section className="settings-grid">
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Privacy controls</h2><p>Control how reviews are stored, shared, and used for account communication.</p></div></div>
+          <div className="toggle-list stacked-toggles">
+            <label><input type="checkbox" checked={privacy.saveReviews} onChange={event => patchPrivacy({ saveReviews: event.target.checked })} /> Save review history</label>
+            <label><input type="checkbox" checked={privacy.allowShareLinks} onChange={event => patchPrivacy({ allowShareLinks: event.target.checked })} /> Allow share links</label>
+            <label><input type="checkbox" checked={privacy.allowProductEmails} onChange={event => patchPrivacy({ allowProductEmails: event.target.checked })} /> Product emails</label>
+          </div>
+        </div>
+        <div className="wide-panel">
+          <div className="section-heading"><div><h2>Data retention</h2><p>Choose how long saved review records are kept before they can be retired.</p></div></div>
+          <label><span>Retention period</span><select value={privacy.retentionDays} onChange={event => patchPrivacy({ retentionDays: Number(event.target.value) })}><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">1 year</option><option value="730">2 years</option></select></label>
+          <div className="toggle-list top-space"><label><input type="checkbox" checked={privacy.deleteAfterRetention} onChange={event => patchPrivacy({ deleteAfterRetention: event.target.checked })} /> Retire records after retention period</label></div>
+          <button type="button" className="ghost-button top-space" onClick={applyDataRetention}>Apply Retention Now</button>
+        </div>
+      </section>
+      <section className="wide-panel">
+        <div className="section-heading"><div><h2>Audit logs</h2><p>Security, billing, developer, and privacy changes are recorded for traceability.</p></div></div>
+        <div className="audit-list">{compliance.auditLogs.length ? compliance.auditLogs.map((item, index) => <article key={`${item.action}-${item.createdAt}-${index}`}><div><strong>{item.action}</strong><span>{formatDate(item.createdAt)}</span></div><small>{item.entityType}{item.entityId ? ` · ${item.entityId}` : ''}</small></article>) : <EmptyState title="No audit events yet" text="Audit records appear after account, billing, API, webhook, and privacy changes." />}</div>
       </section>
     </div>
   )

@@ -1,5 +1,6 @@
 const crypto = require('crypto')
 const { query } = require('../config/database')
+const businessService = require('./business.service')
 
 const selectReviewSql = `
     SELECT
@@ -28,6 +29,9 @@ const selectReviewSql = `
 `
 
 async function saveReview({ userId, projectId, code, review, model, depth, sourceType, sourceUrl, score, fixedCode, checklist, comments, files, aiOptions }) {
+    const privacy = await businessService.getPrivacySettings(userId)
+    if (!privacy.saveReviews) return null
+
     const result = await query(
         `INSERT INTO reviews (
             user_id,
@@ -203,6 +207,13 @@ async function deleteReview({ userId, reviewId }) {
 }
 
 async function createShareLink({ userId, reviewId }) {
+    const privacy = await businessService.getPrivacySettings(userId)
+    if (!privacy.allowShareLinks) {
+        const error = new Error('Share links are disabled in your privacy controls.')
+        error.statusCode = 403
+        throw error
+    }
+
     const existing = await getReviewById(userId, reviewId)
     if (!existing) return null
     if (existing.shareToken) return existing

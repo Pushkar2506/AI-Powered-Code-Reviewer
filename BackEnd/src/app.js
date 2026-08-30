@@ -8,6 +8,10 @@ const reviewRoutes = require('./routes/review.routes')
 const adminRoutes = require('./routes/admin.routes')
 const projectRoutes = require('./routes/project.routes')
 const teamRoutes = require('./routes/team.routes')
+const billingRoutes = require('./routes/billing.routes')
+const developerRoutes = require('./routes/developer.routes')
+const complianceRoutes = require('./routes/compliance.routes')
+const publicApiRoutes = require('./routes/public-api.routes')
 
 const app = express()
 
@@ -66,6 +70,10 @@ app.use('/reviews', reviewRoutes)
 app.use('/projects', projectRoutes)
 app.use('/teams', teamRoutes)
 app.use('/admin', adminRoutes)
+app.use('/billing', billingRoutes)
+app.use('/developer', developerRoutes)
+app.use('/compliance', complianceRoutes)
+app.use('/api/v1', aiLimiter, publicApiRoutes)
 
 app.use((req, res) => {
     res.status(404).json({ error: 'Route not found' })
@@ -80,6 +88,14 @@ app.use((err, req, res, next) => {
 
     if (err.message === 'Not allowed by CORS') {
         return res.status(403).json({ error: 'This origin is not allowed.' })
+    }
+
+    if (err.statusCode && err.statusCode < 500) {
+        return res.status(err.statusCode).json({ error: err.message })
+    }
+
+    if (err.statusCode) {
+        return res.status(err.statusCode).json({ error: err.message || 'Something went wrong. Please try again.' })
     }
 
     return res.status(500).json({ error: 'Something went wrong. Please try again.' })

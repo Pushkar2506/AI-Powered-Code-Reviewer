@@ -3,6 +3,7 @@ const userService = require("../services/user.service")
 const reviewService = require("../services/review.service")
 const projectService = require("../services/project.service")
 const githubService = require("../services/github.service")
+const businessService = require("../services/business.service")
 const { availableModels, getModel } = require("../config/models")
 
 const MAX_CODE_LENGTH = Number(process.env.MAX_CODE_LENGTH) || 20000
@@ -96,6 +97,27 @@ module.exports.getReview = async (req, res) => {
                 generatedTests: structuredReview.generatedTests || [],
                 generatedDocumentation: structuredReview.generatedDocumentation || [],
                 comparison: structuredReview.comparison || {}
+            }
+        })
+        await businessService.recordUsageEvent({
+            userId: req.user.id,
+            eventType: 'review.created',
+            metadata: {
+                sourceType,
+                model: structuredReview.model || selectedModel.id,
+                score: structuredReview.score,
+                saved: Boolean(savedReview),
+                apiKeyId: req.apiKeyId || null
+            }
+        })
+        await businessService.deliverWebhookEvent({
+            userId: req.user.id,
+            event: 'review.created',
+            payload: {
+                reviewId: savedReview?.id || null,
+                sourceType,
+                model: structuredReview.model || selectedModel.id,
+                score: structuredReview.score
             }
         })
 
@@ -201,6 +223,27 @@ module.exports.getReviewStream = async (req, res) => {
             reviewDepth,
             selectedModel,
             structuredReview
+        })
+        await businessService.recordUsageEvent({
+            userId: req.user.id,
+            eventType: 'review.created',
+            metadata: {
+                sourceType,
+                model: structuredReview.model || selectedModel.id,
+                score: structuredReview.score,
+                saved: Boolean(savedReview),
+                apiKeyId: req.apiKeyId || null
+            }
+        })
+        await businessService.deliverWebhookEvent({
+            userId: req.user.id,
+            event: 'review.created',
+            payload: {
+                reviewId: savedReview?.id || null,
+                sourceType,
+                model: structuredReview.model || selectedModel.id,
+                score: structuredReview.score
+            }
         })
 
         send({

@@ -47,10 +47,18 @@ async function createAuthToken(userId, type, minutes = 30) {
 
 async function getUsage(userId) {
     const result = await query(
-        `SELECT COUNT(*)::int AS used
-         FROM reviews
-         WHERE user_id = $1
-         AND created_at >= date_trunc('month', NOW())`,
+        `SELECT GREATEST(
+            (SELECT COUNT(*)::int
+             FROM reviews
+             WHERE user_id = $1
+             AND deleted_at IS NULL
+             AND created_at >= date_trunc('month', NOW())),
+            (SELECT COALESCE(SUM(quantity), 0)::int
+             FROM usage_events
+             WHERE user_id = $1
+             AND event_type = 'review.created'
+             AND created_at >= date_trunc('month', NOW()))
+         ) AS used`,
         [userId]
     )
 

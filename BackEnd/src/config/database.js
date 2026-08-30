@@ -206,6 +206,109 @@ async function initDatabase() {
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS notes TEXT;`)
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS share_token VARCHAR(80) UNIQUE;`)
     await query(`ALTER TABLE reviews ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;`)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            plan VARCHAR(20) NOT NULL DEFAULT 'free',
+            provider VARCHAR(40) NOT NULL DEFAULT 'internal',
+            provider_subscription_id VARCHAR(120),
+            provider_payment_id VARCHAR(120),
+            status VARCHAR(40) NOT NULL DEFAULT 'active',
+            included_reviews INTEGER NOT NULL DEFAULT 20,
+            overage_price_cents INTEGER NOT NULL DEFAULT 0,
+            current_period_start TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            current_period_end TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '1 month'),
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (user_id)
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS usage_events (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            event_type VARCHAR(60) NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            unit_price_cents INTEGER NOT NULL DEFAULT 0,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name VARCHAR(120) NOT NULL,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_prefix VARCHAR(20) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            last_used_at TIMESTAMPTZ,
+            revoked_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS webhook_endpoints (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            url TEXT NOT NULL,
+            events JSONB NOT NULL DEFAULT '[]'::jsonb,
+            signing_secret_hash TEXT NOT NULL,
+            signing_secret_encrypted TEXT,
+            secret_prefix VARCHAR(20) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'active',
+            last_delivery_status VARCHAR(40),
+            last_delivered_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+    await query(`ALTER TABLE webhook_endpoints ADD COLUMN IF NOT EXISTS signing_secret_encrypted TEXT;`)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            action VARCHAR(100) NOT NULL,
+            entity_type VARCHAR(60) NOT NULL,
+            entity_id VARCHAR(120),
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            ip_address VARCHAR(80),
+            user_agent TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+
+    await query(`
+        CREATE TABLE IF NOT EXISTS privacy_settings (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            save_reviews BOOLEAN NOT NULL DEFAULT TRUE,
+            allow_share_links BOOLEAN NOT NULL DEFAULT TRUE,
+            allow_product_emails BOOLEAN NOT NULL DEFAULT FALSE,
+            retention_days INTEGER NOT NULL DEFAULT 365,
+            delete_after_retention BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `)
+
+    await query(`
+        INSERT INTO subscriptions (user_id, plan, provider, status, included_reviews, overage_price_cents)
+        SELECT id, 'free', 'internal', 'active', monthly_limit, 0
+        FROM users
+        ON CONFLICT (user_id) DO NOTHING;
+    `)
+
+    await query(`
+        INSERT INTO privacy_settings (user_id)
+        SELECT id FROM users
+        ON CONFLICT (user_id) DO NOTHING;
+    `)
 }
 
 module.exports = {

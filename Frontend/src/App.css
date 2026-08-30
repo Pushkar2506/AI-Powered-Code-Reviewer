@@ -306,9 +306,16 @@ a {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
 .feature-card,
 .step-card,
 .metric-card,
+.plan-card,
 .wide-panel,
 .panel,
 .auth-panel {
@@ -321,8 +328,50 @@ a {
 .feature-card,
 .step-card,
 .metric-card,
+.plan-card,
 .wide-panel {
   padding: 22px;
+}
+
+.plan-card {
+  display: grid;
+  align-content: space-between;
+  gap: 18px;
+  min-height: 520px;
+}
+
+.plan-card.active {
+  border-color: color-mix(in srgb, var(--primary) 54%, var(--line));
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+}
+
+.plan-card h2 {
+  margin: 14px 0 8px;
+  font-size: 1.35rem;
+}
+
+.plan-card strong {
+  display: block;
+  color: var(--text);
+  font-size: 1.55rem;
+}
+
+.plan-card p,
+.feature-list,
+.compact-details {
+  color: var(--muted);
+}
+
+.feature-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+
+.compact-details {
+  gap: 8px;
 }
 
 .feature-card h3,
@@ -1669,6 +1718,72 @@ button:focus-visible {
   -webkit-line-clamp: 3;
 }
 
+.sensitive-panel code {
+  display: block;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--editor);
+  color: #eef2f6;
+  padding: 14px;
+  font-family: "Fira Code", "Fira Mono", Consolas, monospace;
+  line-height: 1.6;
+}
+
+.api-doc-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.api-doc-grid > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.api-doc-grid code,
+.api-doc-grid pre {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--editor);
+  color: #eef2f6;
+  padding: 14px;
+  font-family: "Fira Code", "Fira Mono", Consolas, monospace;
+  line-height: 1.6;
+}
+
+.stacked-toggles {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.audit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.audit-list article {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 12px 14px;
+}
+
+.audit-list article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.audit-list span,
+.audit-list small {
+  color: var(--muted);
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.72fr);
@@ -1746,6 +1861,7 @@ button:focus-visible {
   .feature-grid,
   .steps-grid,
   .metric-grid,
+  .plan-grid,
   .ai-options-grid,
   .admin-metrics,
   .admin-analytics-grid,
